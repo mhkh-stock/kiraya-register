@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat — Kiraya Register</title>
+<meta name="description" content="Chat with your owner or tenant, per tenancy — like WhatsApp, inside the app.">
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">V</span><h1>Kiraya Register</h1></div>
+  <div class="centre-pill">Your rent, on record</div>
+  <a class="chat-link" id="chat-link" href="/chat" hidden aria-label="Chat">💬<span class="badge" id="chat-badge" hidden></span></a>
+  <a class="bell-link" id="bell" href="/notifications" hidden aria-label="Notifications">🔔<span class="badge" id="bell-badge" hidden></span></a>
+  <span class="lock-pill">🔒 Private</span>
+</header>
+<main>
+  <p><a class="back-link" href="/">← Back to home</a></p>
+  <section class="card">
+    <h2>Chat</h2>
+    <p class="muted" id="tick-note">✓ = stored on the server. ✓✓ = the other person opened the app and it fetched the message. Blue ✓✓ = they opened this chat. This app cannot know their phone received it — that is WhatsApp, not this.</p>
+    <p class="muted">No typing indicator, no online / last seen, no message delete — the record is the proof.</p>
+    <div id="threads"></div>
+  </section>
+  <section class="card" id="thread-view" hidden>
+    <h2 id="thread-title">Chat</h2>
+    <p class="muted" id="thread-sub"></p>
+    <p><a class="back-link" href="/chat">← All chats</a></p>
+    <div class="chat-messages" id="messages" aria-live="polite"></div>
+    <form id="composer" class="composer">
+      <label class="photo-btn" for="photo-input" title="Send a photo">📷<span class="hidden-label">Send a photo</span></label>
+      <input type="file" id="photo-input" accept="image/jpeg,image/png,image/webp" class="file-input-hidden">
+      <input id="chat-input" type="text" maxlength="2000" placeholder="Type a message…" autocomplete="off">
+      <button class="btn-primary" type="submit" id="send-btn">Send</button>
+    </form>
+    <p class="tag" id="chat-msg" role="status"></p>
+  </section>
+</main>
+<script src="/bell.js"></script>
+<script src="/chat-badge.js"></script>
+<script src="/chat.js"></script>
+</body>
+</html>

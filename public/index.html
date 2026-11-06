@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiraya Register — Your rent, on record</title>
+<meta name="description" content="Kiraya Register — a free, open-source record + chat + approval tool for one Pakistani house owner and his rent takers.">
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">V</span><h1>Kiraya Register</h1></div>
+  <div class="centre-pill">Your rent, on record</div>
+  <a class="chat-link" id="chat-link" href="/chat" hidden aria-label="Chat">💬<span class="badge" id="chat-badge" hidden></span></a>
+  <a class="bell-link" id="bell" href="/notifications" hidden aria-label="Notifications">🔔<span class="badge" id="bell-badge" hidden></span></a>
+  <span class="lock-pill">🔒 Private</span>
+</header>
+<main>
+  <section class="card">
+    <h2>Kiraya Register — کرایہ رجسٹر</h2>
+    <p>For one house owner and his rent takers. The owner lists his houses and keeps every schedule — rent, gas, electricity. The tenant logs in, links with a house code the owner shares, sees the same bills, and proves each payment with a screenshot the owner approves. They chat in the app, like WhatsApp.</p>
+    <p><a class="btn-primary" href="/login">Log in / Register</a></p>
+    <p class="tag">v1 final: accounts, houses, link codes, tenancy approval, schedules, bills, payment proofs, receipts and WhatsApp-like chat are live.</p>
+  </section>
+  <section class="card" id="due-card" hidden>
+    <h2>Due now</h2>
+    <p class="muted">Bills due in the next 3 days, due today, or overdue — for your own tenancy only.</p>
+    <div id="due-list"></div>
+  </section>
+  <section class="card">
+    <h2>Honest limits — please read</h2>
+    <ul>
+      <li>This is a <strong>record + chat + approval tool</strong> — not a legal agreement and not a payment system.</li>
+      <li>A screenshot proves the tenant <em>showed</em> a payment. Only the owner, checking his own account, knows the money arrived.</li>
+      <li>Gas and electricity amounts are entered when the real bill arrives — the app never invents a utility figure.</li>
+      <li>No reminders when the app is closed. No real WhatsApp messages — the bell is in-app only.</li>
+      <li>Chat ticks mean “stored / fetched / opened in the app”, not WhatsApp delivery.</li>
+      <li>Photos live on the server disk until a persistent store exists; a redeploy can lose them.</li>
+      <li>The app never verifies an owner’s identity, a tenant’s identity, or a house’s ownership.</li>
+      <li>Legal lines are general information, not legal advice — check with the Rent Registrar / a lawyer.</li>
+    </ul>
+  </section>
+</main>
+<script src="/bell.js"></script>
+<script src="/chat-badge.js"></script>
+<script src="/index.js"></script>
+</body>
+</html>

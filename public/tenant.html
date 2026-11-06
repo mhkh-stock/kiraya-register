@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My tenancy — Kiraya Register</title>
+<meta name="description" content="Rent taker dashboard: link with your owner with a house code, see your tenancy.">
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">V</span><h1>Kiraya Register</h1></div>
+  <div class="centre-pill">Your rent, on record</div>
+  <a class="chat-link" id="chat-link" href="/chat" hidden aria-label="Chat">💬<span class="badge" id="chat-badge" hidden></span></a>
+  <a class="bell-link" id="bell" href="/notifications" hidden aria-label="Notifications">🔔<span class="badge" id="bell-badge" hidden></span></a>
+  <span class="lock-pill">🔒 Private</span>
+</header>
+<main>
+  <p><a class="back-link" href="/">← Back to home</a></p>
+  <p class="tag" id="who" role="status"></p>
+
+  <section class="card">
+    <h2>Link with my owner</h2>
+    <p>Your owner shares a house code with you (in person or on WhatsApp). Enter it here to send a link request — your owner approves it before anything starts.</p>
+    <form id="link-form">
+      <label for="link-code">House code</label>
+      <input id="link-code" name="code" type="text" required maxlength="20" placeholder="KRY-4X7Q2A" autocomplete="off">
+      <p><button class="btn-primary" type="submit">Send link request</button></p>
+      <p class="tag" id="link-msg" role="status"></p>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>My tenancy</h2>
+    <div id="tenancy"></div>
+  </section>
+
+  <section class="card">
+    <h2>My bills</h2>
+    <p class="muted">The same bills your owner sees. Gas and electricity show “Amount not entered yet” until your owner enters the real bill amount — the app never invents a figure.</p>
+    <p class="muted">A screenshot proves the tenant showed a payment — only the owner, checking his own account, knows the money arrived.</p>
+    <div id="bills"></div>
+  </section>
+
+  <section class="card">
+    <h2>My receipts</h2>
+    <p class="muted">Receipts for payments your owner approved. A receipt means the owner checked the proof — the app never claims the money itself arrived.</p>
+    <div id="receipts"></div>
+    <p><a class="pill" href="/api/tenant/ledger.csv">Download my ledger (CSV)</a></p>
+  </section>
+
+  <section class="card">
+    <h2>Legal checklist</h2>
+    <p class="muted">General information, not legal advice — check with the Rent Registrar / a lawyer. Rent law is provincial and changes.</p>
+    <ul id="checklist">
+      <li>Written tenancy agreement (e-stamp paper) — the landlord's responsibility to register with the Rent Registrar.</li>
+      <li>Registered with the Rent Registrar — without it, the Rent Tribunal will not accept applications.</li>
+      <li>Registered with the local police station / Police Khidmat Markaz (tenant details + agreement).</li>
+      <li>Keep every rent receipt — the record is the proof.</li>
+    </ul>
+    <div id="checklist-status"></div>
+  </section>
+</main>
+<script src="/bell.js"></script>
+<script src="/chat-badge.js"></script>
+<script src="/tenant.js"></script>
+</body>
+</html>

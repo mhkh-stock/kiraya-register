@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in — Kiraya Register</title>
+<meta name="description" content="Log in or register for Kiraya Register — house owner or rent taker.">
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">V</span><h1>Kiraya Register</h1></div>
+  <div class="centre-pill">Your rent, on record</div>
+  <span class="lock-pill">🔒 Private</span>
+</header>
+<main>
+  <p><a class="back-link" href="/">← Back to home</a></p>
+  <div class="wallet-grid">
+    <section class="card">
+      <h2>Log in as House Owner</h2>
+      <p>List your houses, keep the schedules, approve link requests and payment proofs.</p>
+      <form id="login-owner" method="post" action="/api/auth/login">
+        <label for="owner-gmail">Gmail</label>
+        <input id="owner-gmail" name="gmail" type="email" required autocomplete="username" placeholder="you@gmail.com">
+        <label for="owner-password">Password</label>
+        <input id="owner-password" name="password" type="password" required autocomplete="current-password" minlength="8">
+        <p><button class="btn-primary" type="submit">Log in as Owner</button></p>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Log in as Rent Taker</h2>
+      <p>See your tenancy and bills, upload paid-bill screenshots, chat with your owner.</p>
+      <form id="login-tenant" method="post" action="/api/auth/login">
+        <label for="tenant-gmail">Gmail</label>
+        <input id="tenant-gmail" name="gmail" type="email" required autocomplete="username" placeholder="you@gmail.com">
+        <label for="tenant-password">Password</label>
+        <input id="tenant-password" name="password" type="password" required autocomplete="current-password" minlength="8">
+        <p><button class="btn-primary" type="submit">Log in as Rent Taker</button></p>
+      </form>
+    </section>
+  </div>
+  <section class="card">
+    <h2>New here? Register</h2>
+    <p>Pick your role first — the form asks for the matching details.</p>
+    <form id="register-form">
+      <label for="reg-role">I am a</label>
+      <select id="reg-role" name="role">
+        <option value="owner">House Owner</option>
+        <option value="tenant">Rent Taker (Kirayedar)</option>
+      </select>
+      <label for="reg-name">Your name</label>
+      <input id="reg-name" name="display_name" type="text" required maxlength="100" placeholder="The name the other party will see">
+      <label for="reg-gmail">Gmail</label>
+      <input id="reg-gmail" name="gmail" type="email" required placeholder="you@gmail.com">
+      <label for="reg-phone">Phone (03XX-XXXXXXX)</label>
+      <input id="reg-phone" name="phone" type="tel" required placeholder="0300-1234567">
+      <div id="cnic-field" hidden>
+        <label for="reg-cnic">CNIC (13 digits)</label>
+        <input id="reg-cnic" name="cnic" type="text" inputmode="numeric" maxlength="13" placeholder="3520212345671">
+        <p class="tag">Needed for police registration — only your owner sees it. Lists show the last 4 digits only.</p>
+      </div>
+      <label for="reg-password">Password (at least 8 characters)</label>
+      <input id="reg-password" name="password" type="password" required minlength="8" autocomplete="new-password">
+      <p><button class="btn-primary" type="submit">Register</button></p>
+      <p class="tag" id="reg-msg" role="status"></p>
+    </form>
+    <p class="tag">After logging in you land on your dashboard: owners on My Houses, rent takers on My Tenancy.</p>
+  </section>
+</main>
+<script>
+(function () {
+  // Login forms: submit as JSON to the API.
+  document.querySelectorAll('form[id^="login-"]').forEach(function (f) {
+    f.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var gmail = f.querySelector('input[name="gmail"]').value.trim();
+      var password = f.querySelector('input[name="password"]').value;
+      var res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gmail: gmail, password: password })
+      });
+      if (res.ok) {
+        var role = (data.user && data.user.role) || 'owner';
+        window.location.href = role === 'tenant' ? '/tenant' : '/owner';
+      }
+      else {
+        var data = await res.json().catch(function () { return {}; });
+        alert(data.error || ('Login failed (' + res.status + ').'));
+      }
+    });
+  });
+  var role = document.getElementById('reg-role');
+  var cnicField = document.getElementById('cnic-field');
+  var cnicInput = document.getElementById('reg-cnic');
+  function syncRole() {
+    var isTenant = role.value === 'tenant';
+    cnicField.hidden = !isTenant;
+    cnicInput.required = isTenant;
+  }
+  role.addEventListener('change', syncRole);
+  syncRole();
+  var form = document.getElementById('register-form');
+  var msg = document.getElementById('reg-msg');
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    msg.textContent = '';
+    var body = {
+      gmail: document.getElementById('reg-gmail').value.trim(),
+      password: document.getElementById('reg-password').value,
+      display_name: document.getElementById('reg-name').value.trim(),
+      phone: document.getElementById('reg-phone').value.trim(),
+      role: role.value
+    };
+    if (role.value === 'tenant') body.cnic = cnicInput.value.replace(/[^0-9]/g, '');
+    try {
+      var res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      var data = await res.json().catch(function () { return {}; });
+      if (res.ok) { msg.textContent = 'Registered — welcome, ' + (data.user && data.user.display_name ? data.user.display_name : '') + '.'; }
+      else { msg.textContent = data.error || ('Registration failed (' + res.status + ').'); }
+    } catch (err) { msg.textContent = 'Could not reach the server. Please try again.'; }
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My houses — Kiraya Register</title>
+<meta name="description" content="Owner dashboard: your houses, link codes, link requests and tenancies.">
+<link rel="icon" href="/favicon.ico">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><span class="logo">V</span><h1>Kiraya Register</h1></div>
+  <div class="centre-pill">Your rent, on record</div>
+  <a class="chat-link" id="chat-link" href="/chat" hidden aria-label="Chat">💬<span class="badge" id="chat-badge" hidden></span></a>
+  <a class="bell-link" id="bell" href="/notifications" hidden aria-label="Notifications">🔔<span class="badge" id="bell-badge" hidden></span></a>
+  <span class="lock-pill">🔒 Private</span>
+</header>
+<main>
+  <p><a class="back-link" href="/">← Back to home</a> &nbsp; <a class="back-link" href="/login">Log out / switch account</a></p>
+  <p class="tag" id="who" role="status"></p>
+
+  <section class="card">
+    <h2>My houses</h2>
+    <div id="houses"></div>
+  </section>
+
+  <section class="card">
+    <h2 id="form-title">Add a house</h2>
+    <form id="house-form">
+      <label for="f-title">Title</label>
+      <input id="f-title" name="title" type="text" required maxlength="150" placeholder="House 12-B, Street 4">
+      <div class="row">
+        <div>
+          <label for="f-kind">Type</label>
+          <select id="f-kind" name="kind">
+            <option value="house">House</option>
+            <option value="portion">Portion</option>
+            <option value="flat">Flat</option>
+            <option value="shop">Shop</option>
+            <option value="room">Room</option>
+          </select>
+        </div>
+        <div>
+          <label for="f-rent">Monthly rent (Rs)</label>
+          <input id="f-rent" name="rent_pkr" type="number" required min="1" max="100000000" step="1" placeholder="45000">
+        </div>
+      </div>
+      <label for="f-address">Address</label>
+      <input id="f-address" name="address" type="text" required maxlength="300" placeholder="Street, area, city">
+      <div class="row">
+        <div>
+          <label for="f-city">City</label>
+          <input id="f-city" name="city" type="text" maxlength="100" placeholder="Lahore">
+        </div>
+        <div>
+          <label for="f-area">Area</label>
+          <input id="f-area" name="area" type="text" maxlength="100" placeholder="Gulberg III">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="f-bedrooms">Bedrooms</label>
+          <input id="f-bedrooms" name="bedrooms" type="number" min="0" max="50" step="1" placeholder="Not available — leave blank">
+        </div>
+        <div>
+          <label for="f-bathrooms">Bathrooms</label>
+          <input id="f-bathrooms" name="bathrooms" type="number" min="0" max="50" step="1" placeholder="Not available — leave blank">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="f-advance">Advance (Rs)</label>
+          <input id="f-advance" name="advance_pkr" type="number" min="0" max="100000000" step="1" placeholder="0 if none">
+        </div>
+        <div>
+          <label for="f-deposit">Security deposit (Rs)</label>
+          <input id="f-deposit" name="security_deposit_pkr" type="number" min="0" max="100000000" step="1" placeholder="0 if none">
+        </div>
+      </div>
+      <label>Bills included in the rent</label>
+      <div class="row" id="bills-included">
+        <label><input type="checkbox" value="water"> Water</label>
+        <label><input type="checkbox" value="gas"> Gas</label>
+        <label><input type="checkbox" value="electricity"> Electricity</label>
+        <label><input type="checkbox" value="internet"> Internet</label>
+        <label><input type="checkbox" value="maintenance"> Maintenance</label>
+      </div>
+      <label for="f-maps">Google Maps link (share / embed only)</label>
+      <input id="f-maps" name="maps_url" type="url" maxlength="500" placeholder="https://www.google.com/maps/place/...">
+      <div class="row">
+        <div>
+          <label for="f-plus">Plus code</label>
+          <input id="f-plus" name="plus_code" type="text" maxlength="50" placeholder="8H6J+2X Lahore">
+        </div>
+        <div>
+          <label for="f-available">Available from</label>
+          <input id="f-available" name="available_from" type="date">
+        </div>
+      </div>
+      <p>
+        <button class="btn-primary" type="submit" id="save-btn">Add house</button>
+        <button class="secondary" type="button" id="cancel-edit" hidden>Cancel edit</button>
+      </p>
+      <p class="tag" id="form-msg" role="status"></p>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Link requests</h2>
+    <p class="muted">Tenants who entered one of your house codes. Approve to start the tenancy — nothing (no schedule, no bill, no chat) exists before you approve.</p>
+    <div id="requests"></div>
+  </section>
+
+  <section class="card">
+    <h2>Pending payment approvals</h2>
+    <p class="muted">Proofs your tenants uploaded. Check your own account before approving — a screenshot proves the tenant showed a payment, only you, checking your own account, know the money arrived.</p>
+    <div id="pending-payments"></div>
+    <p><a class="pill" href="/api/owner/ledger.csv">Download ledger (CSV)</a></p>
+  </section>
+
+  <section class="card">
+    <h2>Tenancies</h2>
+    <div id="tenancies"></div>
+  </section>
+</main>
+<script src="/bell.js"></script>
+<script src="/chat-badge.js"></script>
+<script src="/owner.js"></script>
+</body>
+</html>
