@@ -1556,6 +1556,139 @@ async function main() {
     check('home page 200', r.status === 200 && r.text.includes('Kiraya Register'), r.status);
     r = await req('GET', '/login');
     check('/login page 200', r.status === 200 && r.text.includes('Rent Taker'), r.status);
+
+    // --- login page flow (jsdom): the browser login must redirect ---
+    // Regression for the 2026-11-07 login bug: the login handler used
+    // `data` before parsing it, so a correct login threw and the button
+    // looked dead. The suite only tested the API, so the bug shipped.
+    // jsdom cannot navigate to another document, so the test stubs ONLY
+    // the navigation sink (window.location.href = X becomes a recorded
+    // call) — the handler, the role decision and the real server response
+    // all still run for real. The smoke below proves the session cookie
+    // then opens /owner and /tenant.
+    let jsdomMod = null;
+    try { jsdomMod = require('/home/hatch/workspace/register-bug-repro/node_modules/jsdom'); }
+    catch (e1) { try { jsdomMod = require('jsdom'); } catch (e2) { /* jsdom not installed */ } }
+    if (!jsdomMod) {
+      console.log('  SKIP - login-flow jsdom tests (jsdom not installed on this machine)');
+    } else {
+      const { JSDOM, VirtualConsole } = jsdomMod;
+      const pageErrors = [];
+      const onPageRejection = (e) => pageErrors.push(e && e.message ? e.message : String(e));
+      process.on('unhandledRejection', onPageRejection);
+      const sleep = (ms) => new Promise((res2) => setTimeout(res2, ms));
+      function stubNavigation(html) {
+        // Replace every `window.location.href = X;` with a recorded call.
+        // Handles both the literal form ('/login') and the login page's
+        // role expression. The path expression itself is untouched.
+        let out = html.replace(
+          "window.location.href = role === 'tenant' ? '/tenant' : '/owner';",
+          "window.__redirectTo(role === 'tenant' ? '/tenant' : '/owner');");
+        out = out.replace(/window\.location\.href = ('[^']+');/g, 'window.__redirectTo($1);');
+        return { html: out, stubbed: out.includes('__redirectTo') };
+      }
+      function drivePage(html, pageUrl, fetchImpl) {
+        const redirects = [];
+        const alerts = [];
+        const jsdomErrors = [];
+        const vc = new VirtualConsole();
+        vc.on('jsdomError', (e) => jsdomErrors.push(e && e.message ? e.message : String(e)));
+        const dom = new JSDOM(html, {
+          url: pageUrl,
+          runScripts: 'dangerously',
+          virtualConsole: vc,
+          beforeParse(window) {
+            window.__redirects = redirects;
+            window.__redirectTo = function (u) { redirects.push(String(u)); };
+            window.alert = function (m) { alerts.push(String(m)); };
+            window.fetch = fetchImpl || function (input, init) {
+              const u = typeof input === 'string' ? new URL(input, pageUrl).toString() : input;
+              return fetch(u, init);
+            };
+          },
+        });
+        return { dom, redirects, alerts, jsdomErrors };
+      }
+      const rawLoginHtml = fs.readFileSync(path.join(__dirname, 'public', 'login.html'), 'utf8');
+      const loginStub = stubNavigation(rawLoginHtml);
+      check('login flow: navigation sink stubbed (test harness)', loginStub.stubbed, 'window.location.href not found in login.html');
+      const loginHtml = loginStub.html;
+      // (a) correct owner login redirects to /owner
+      // NOTE: the suite changed owner1's password to ownerpass2 at the
+      // change-password check above, and tenant1's to tenantpass9 at the
+      // master-reset check — these are the current passwords.
+      {
+        const p = drivePage(loginHtml, BASE + '/login');
+        const doc = p.dom.window.document;
+        doc.getElementById('owner-gmail').value = 'owner1@gmail.com';
+        doc.getElementById('owner-password').value = 'ownerpass2';
+        doc.getElementById('login-owner').dispatchEvent(new p.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+        await sleep(800);
+        check('login flow: owner login redirects to /owner',
+          p.redirects.length === 1 && p.redirects[0] === '/owner' && p.jsdomErrors.length === 0,
+          'redirects=' + JSON.stringify(p.redirects) + ' alerts=' + JSON.stringify(p.alerts) + ' errors=' + JSON.stringify(p.jsdomErrors));
+        p.dom.window.close();
+      }
+      // (b) correct tenant login redirects to /tenant
+      {
+        const p = drivePage(loginHtml, BASE + '/login');
+        const doc = p.dom.window.document;
+        doc.getElementById('tenant-gmail').value = 'tenant1@gmail.com';
+        doc.getElementById('tenant-password').value = 'tenantpass9';
+        doc.getElementById('login-tenant').dispatchEvent(new p.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+        await sleep(800);
+        check('login flow: tenant login redirects to /tenant',
+          p.redirects.length === 1 && p.redirects[0] === '/tenant' && p.jsdomErrors.length === 0,
+          'redirects=' + JSON.stringify(p.redirects) + ' alerts=' + JSON.stringify(p.alerts) + ' errors=' + JSON.stringify(p.jsdomErrors));
+        p.dom.window.close();
+      }
+      // (c) wrong password shows the error and does NOT redirect
+      {
+        const p = drivePage(loginHtml, BASE + '/login');
+        const doc = p.dom.window.document;
+        doc.getElementById('owner-gmail').value = 'owner1@gmail.com';
+        doc.getElementById('owner-password').value = 'ownerpassWRONG';
+        doc.getElementById('login-owner').dispatchEvent(new p.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+        await sleep(800);
+        check('login flow: wrong password shows the error, no redirect',
+          p.redirects.length === 0 && p.alerts.length === 1 && p.alerts[0] === 'invalid Gmail or password' && p.jsdomErrors.length === 0,
+          'redirects=' + JSON.stringify(p.redirects) + ' alerts=' + JSON.stringify(p.alerts) + ' errors=' + JSON.stringify(p.jsdomErrors));
+        p.dom.window.close();
+      }
+      // (d) server unreachable shows a plain message, no redirect
+      {
+        const p = drivePage(loginHtml, 'http://127.0.0.1:1/login');
+        const doc = p.dom.window.document;
+        doc.getElementById('owner-gmail').value = 'owner1@gmail.com';
+        doc.getElementById('owner-password').value = 'ownerpass2';
+        doc.getElementById('login-owner').dispatchEvent(new p.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+        await sleep(800);
+        check('login flow: server unreachable shows a plain message, no redirect',
+          p.redirects.length === 0 && p.alerts.length === 0 && p.jsdomErrors.length === 0
+          && doc.getElementById('login-owner-msg').textContent === 'Could not reach the server. Please try again.',
+          'redirects=' + JSON.stringify(p.redirects) + ' alerts=' + JSON.stringify(p.alerts)
+          + ' msg=' + JSON.stringify(doc.getElementById('login-owner-msg').textContent) + ' errors=' + JSON.stringify(p.jsdomErrors));
+        p.dom.window.close();
+      }
+      // (e) dashboard guard: when the server cannot be reached, the owner
+      // page sends the user back to /login instead of sitting blank.
+      {
+        const rawOwnerHtml = fs.readFileSync(path.join(__dirname, 'public', 'owner.html'), 'utf8');
+        const ownerJs = fs.readFileSync(path.join(__dirname, 'public', 'owner.js'), 'utf8');
+        const ownerStub = stubNavigation(rawOwnerHtml.replace(
+          '<script src="/owner.js"></script>',
+          '<script>\n' + ownerJs + '\n</script>'));
+        check('login flow: owner page navigation sink stubbed (test harness)', ownerStub.stubbed, 'no window.location.href in owner page');
+        const p = drivePage(ownerStub.html, BASE + '/owner', () => Promise.reject(new Error('offline')));
+        await sleep(800);
+        check('login flow: owner dashboard unreachable sends user to /login',
+          p.redirects.length === 1 && p.redirects[0] === '/login' && p.jsdomErrors.length === 0,
+          'redirects=' + JSON.stringify(p.redirects) + ' errors=' + JSON.stringify(p.jsdomErrors));
+        p.dom.window.close();
+      }
+      check('login flow: no unhandled rejection from any page handler', pageErrors.length === 0, JSON.stringify(pageErrors));
+      process.removeListener('unhandledRejection', onPageRejection);
+    }
   } finally {
     child.kill('SIGTERM');
     await new Promise((res2) => setTimeout(res2, 500));
