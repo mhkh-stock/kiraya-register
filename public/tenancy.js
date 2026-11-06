@@ -19,11 +19,16 @@
   }
 
   async function api(method, path, body) {
-    var res = await fetch(path, {
-      method: method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    var res;
+    try {
+      res = await fetch(path, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (e) {
+      return { status: 0, data: { error: 'Could not reach the server. Please try again.' } };
+    }
     var data = await res.json().catch(function () { return {}; });
     return { status: res.status, data: data };
   }

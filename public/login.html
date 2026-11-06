@@ -26,6 +26,7 @@
         <label for="owner-password">Password</label>
         <input id="owner-password" name="password" type="password" required autocomplete="current-password" minlength="8">
         <p><button class="btn-primary" type="submit">Log in as Owner</button></p>
+        <p class="tag" id="login-owner-msg" role="status"></p>
       </form>
     </section>
     <section class="card">
@@ -37,6 +38,7 @@
         <label for="tenant-password">Password</label>
         <input id="tenant-password" name="password" type="password" required autocomplete="current-password" minlength="8">
         <p><button class="btn-primary" type="submit">Log in as Rent Taker</button></p>
+        <p class="tag" id="login-tenant-msg" role="status"></p>
       </form>
     </section>
   </div>
@@ -74,20 +76,31 @@
   document.querySelectorAll('form[id^="login-"]').forEach(function (f) {
     f.addEventListener('submit', async function (e) {
       e.preventDefault();
+      var msg = f.querySelector('[role="status"]');
+      if (msg) msg.textContent = '';
+      var btn = f.querySelector('button[type="submit"]');
+      var oldText = btn ? btn.textContent : '';
+      if (btn) { btn.disabled = true; btn.textContent = 'Logging in…'; }
       var gmail = f.querySelector('input[name="gmail"]').value.trim();
       var password = f.querySelector('input[name="password"]').value;
-      var res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ gmail: gmail, password: password })
-      });
-      if (res.ok) {
-        var role = (data.user && data.user.role) || 'owner';
-        window.location.href = role === 'tenant' ? '/tenant' : '/owner';
-      }
-      else {
+      try {
+        var res = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gmail: gmail, password: password })
+        });
         var data = await res.json().catch(function () { return {}; });
-        alert(data.error || ('Login failed (' + res.status + ').'));
+        if (res.ok) {
+          var role = (data.user && data.user.role) || 'owner';
+          window.location.href = role === 'tenant' ? '/tenant' : '/owner';
+        } else {
+          alert(data.error || ('Login failed (' + res.status + ').'));
+        }
+      } catch (err) {
+        if (msg) msg.textContent = 'Could not reach the server. Please try again.';
+        else alert('Could not reach the server. Please try again.');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = oldText; }
       }
     });
   });

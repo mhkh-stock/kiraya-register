@@ -126,10 +126,16 @@
     var body = input.value;
     if (!body.trim()) { msg.textContent = 'Type a message first.'; return; }
     if (body.length > 2000) { msg.textContent = 'Message is too long (max 2000 characters).'; return; }
-    var res = await fetch('/api/chat/' + tenancyId + '/messages', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ body: body }),
-    });
+    var res;
+    try {
+      res = await fetch('/api/chat/' + tenancyId + '/messages', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body: body }),
+      });
+    } catch (e) {
+      msg.textContent = 'Could not reach the server. Please try again.';
+      return;
+    }
     if (res.status === 401) { window.location.href = '/login'; return; }
     if (!res.ok) {
       var err = {};
@@ -149,7 +155,13 @@
     if (file.size > 5 * 1024 * 1024) { msg.textContent = 'Photo is too large — max 5MB.'; return; }
     var fd = new FormData();
     fd.append('photo', file);
-    var res = await fetch('/api/chat/' + tenancyId + '/messages/photo', { method: 'POST', body: fd });
+    var res;
+    try {
+      res = await fetch('/api/chat/' + tenancyId + '/messages/photo', { method: 'POST', body: fd });
+    } catch (e) {
+      msg.textContent = 'Could not reach the server. Please try again.';
+      return;
+    }
     if (res.status === 401) { window.location.href = '/login'; return; }
     if (!res.ok) {
       var err = {};
