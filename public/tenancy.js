@@ -48,7 +48,13 @@
     } else {
       var r2 = await api('GET', '/api/tenant/tenancy');
       if (r2.status === 200 && r2.data.tenancy && r2.data.tenancy.id === id) t = r2.data.tenancy;
-      else { el('detail').textContent = 'This is not your tenancy.'; return; }
+      else {
+        // An ended tenancy is no longer the current one — it lives in
+        // history, with its bills, payments and receipts.
+        var r3 = await api('GET', '/api/tenant/history');
+        if (r3.status === 200) t = (r3.data.tenancies || []).find(function (x) { return x.id === id; }) || null;
+        if (!t) { el('detail').textContent = 'This is not your tenancy.'; return; }
+      }
     }
     var other = role === 'owner'
       ? 'Tenant: ' + esc(t.tenant.display_name) + ' · ' + esc(t.tenant.phone) + ' · CNIC …' + esc(t.tenant.cnic_last4 || '') + (t.tenant.cnic ? ' (full CNIC on file)' : '')

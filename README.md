@@ -50,10 +50,10 @@ OWNER                                    TENANT
 ```
 
 - **One owner, many houses and tenants** (one tenancy per house). **One tenant, one active tenancy at a time** — a second house needs a second account.
-- A tenancy ends only when the owner ends it, or the tenant asks and the owner confirms. Ended tenancies stay read-only — the history is the proof.
+- A tenancy ends only when the owner ends it, or the tenant asks and the owner confirms. Ended tenancies stay read-only — the history is the proof. The tenant keeps reading an ended tenancy (bills, payments, receipts) under Past tenancies; the owner reads it the same way as always.
 - There is **no public browse of houses and no owner directory**. A tenant finds a house ONLY through the code the owner shares directly.
-- Bills generate lazily for the current month when either party opens the tenancy (and on server start). Rent bills carry a fixed amount; gas/electricity/water bills carry **no amount until the owner enters the real figure** — the app never invents a utility figure.
-- A payment is one proof per bill; a second payment on the same bill is a correction (the old row stays in history, the new one becomes the current proof). Approving a payment marks the bill paid and creates a receipt (`RCP-<tenancy>-<seq>`). The ledger exports as CSV (owner: their tenancies; tenant: their own payments).
+- Bills generate lazily for every month from the tenancy's start month through the current month when either party opens the tenancy (and on server start, and at approval). A schedule the owner adds later bills only from the month it was added — the app never invents a bill for a month before a schedule existed, and a future start date generates no bills until that month. Rent bills carry a fixed amount; gas/electricity/water bills carry **no amount until the owner enters the real figure** — the app never invents a utility figure.
+- A payment is one proof per bill; a second payment on the same bill is a correction (the old row stays in history, the new one becomes the current proof). Approving a payment marks the bill paid and creates a receipt (`RCP-<tenancy>-<seq>`). The ledger exports as CSV (owner: their tenancies; tenant: their own payments). The owner's pending-approvals queue shows the bill amount next to the paid amount, and flags a payment whose amount differs from its bill — so a part payment is never approved by mistake.
 - Chat ticks, honestly: ✓ = stored on the server; ✓✓ = the other person opened the app and it fetched the message; blue ✓✓ = they opened this chat. The app cannot know their phone received it — that is WhatsApp, not this. No typing indicator, no online / last seen, no message delete.
 
 ## Run it (on your PC)
@@ -68,7 +68,7 @@ Then open **http://127.0.0.1:3038** (port **3038**).
 
 - `ADMIN_CODE` is **required** — the server exits immediately without it. There is no default. Pick a private code and never share it, never commit it, never put it in a file in this repo.
 - Data lives in `data/kiraya.sqlite` (created on first run) and photos in `uploads/`. Both are git-ignored and must never be pushed.
-- `node test.js` runs the full test suite (455 tests, throwaway DB on port 3098).
+- `node test.js` runs the full test suite (530 tests, throwaway DB on port 3098).
 
 ## Deploy (SnapDeploy container)
 
@@ -80,6 +80,8 @@ Environment variables:
 | `DB_FILE` | `/tmp/kiraya.sqlite` |
 | `UPLOADS_DIR` | `/tmp/kiraya-uploads` |
 | `ADMIN_CODE` | `<private value — set in the deploy dashboard, never in code>` |
+| `SESSION_SECRET` | `<private value — optional; set it so logins survive a restart (without it the server picks a random secret each start and every session ends)>` |
+| `UPLOAD_LIMIT_PER_HOUR` | `30` (default; max photo uploads per account per hour) |
 | `PORT` | `3038` (default) |
 
 ## Honest limits (printed in the app, not buried)
@@ -105,11 +107,11 @@ There is **no live date yet**: the SnapDeploy free tier is 4/4 full, so Kiraya R
 ## Security summary
 
 - **Passwords:** scrypt only, salt per account, constant-time verify. No password, token or Gmail in any log.
-- **Sessions:** random 32-byte token, HMAC-SHA256 hash stored in the DB, 24h expiry, `HttpOnly; SameSite=Lax` cookie. Logout, suspend and password-reset all kill sessions.
+- **Sessions:** random 32-byte token, HMAC-SHA256 hash stored in the DB, 24h expiry, `HttpOnly; SameSite=Lax` cookie. Logout, suspend, master password-reset and change-password all kill sessions (change-password hands the changing browser a fresh cookie, so it stays logged in).
 - **Lockout:** 5 failed logins → 15-minute lock (account + IP), generic "invalid Gmail or password" errors, 429s on register / login / link-code abuse.
 - **Strict isolation, tested on every endpoint:** tenant A vs tenant B (tenancy / bill / payment / photo / message → 403), owner A vs owner B (house / tenancy / bill / chat → 403), tenant without a code → 403, master → no message bodies, no full CNICs (404 / last-4 only).
 - **Link codes:** random 6 characters (`KRY-XXXXXX`, no 0/O/1/I), per house, regenerable; wrong-code error is generic ("code not recognised"); 5 attempts/hour per IP + per account; a code reveals nothing about the house until the owner approves.
-- **Uploads:** magic bytes first, extension second (must match), 5 MB cap, 8 photos per house, 1 current proof per bill, random stored names, path guard, `nosniff`; photos are served only to the linked pair, never as HTML.
+- **Uploads:** magic bytes first, extension second (must match), 5 MB cap, 8 photos per house, 1 current proof per bill, 30 uploads/hour per account, random stored names, path guard, `nosniff`; photos are served only to the linked pair, never as HTML.
 - **XSS:** every user string is escaped on render (`esc()` / `escHtml()` in every `public/*.js`); chat links render as plain text, never clickable HTML.
 - **CSRF:** `SameSite=Lax` cookies + Origin/Referer check on all cookie-authenticated POSTs.
 - **Input validation on every boundary:** enums, ranges, length caps, Pakistani phone format, Gmail format, CNIC 13 digits for tenants; unknown fields rejected. Map URLs must be Google Maps share/embed links.
@@ -124,6 +126,6 @@ Real WhatsApp API messages; SMS; push notifications; in-app rent payment (money 
 
 ## Tests
 
-`node test.js` — **455/455 passing** (final, Phase 6). The suite covers auth + lockout, houses + codes + tenancy approval, schedules + bills + notifications, payment proofs + receipts + ledger CSV, chat + ticks (sent → delivered → read), isolation on every endpoint, CSRF, ADMIN_CODE fail-closed (spawn without the env var → exit code 1), and one full end-to-end scenario (register → house → code → link → approve → bill → proof → approve → receipt → chat ticks → second-link blocked → end tenancy → history readable, new chat/payment blocked).
+`node test.js` — **530/530 passing** (final, Phase 6 + 2026-11-07 review). The suite covers auth + lockout, houses + codes + tenancy approval, schedules + bills + notifications, payment proofs + receipts + ledger CSV, chat + ticks (sent → delivered → read), isolation on every endpoint, CSRF, ADMIN_CODE fail-closed (spawn without the env var → exit code 1), one full end-to-end scenario (register → house → code → link → approve → bill → proof → approve → receipt → chat ticks → second-link blocked → end tenancy → history readable, new chat/payment blocked), and the review fixes: second approval for one tenant → 409, re-approve → one rent schedule and one rent bill, bill backfill from the start month (schedules added later bill only from their month, future start bills nothing), tenant history after the end, change-password killing other sessions, per-account upload limit (31st upload → 429), per-bill notification dedup, and real WCAG contrast ratios for the palette.
 
 The real-browser pass (owner creates a house → tenant links → schedule → bill → proof → approve → chat) still needs Hashir's PC re-test — subagents have no browser.

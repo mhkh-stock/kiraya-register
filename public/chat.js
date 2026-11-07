@@ -49,10 +49,17 @@
   }
   async function fetchMessages(since) {
     var url = '/api/chat/' + tenancyId + '/messages' + (since ? '?since=' + since : '');
-    var res = await fetch(url);
+    var res;
+    try {
+      res = await fetch(url);
+    } catch (e) {
+      // A dropped connection is a background rejection without this
+      // guard; the next 5s poll retries. No button breaks.
+      return [];
+    }
     if (res.status === 401) { window.location.href = '/login'; return []; }
     if (!res.ok) return [];
-    var data = await res.json();
+    var data = await res.json().catch(function () { return {}; });
     return data.messages || [];
   }
   async function loadThread() {
@@ -72,10 +79,18 @@
 
   async function loadThreads() {
     var box = document.getElementById('threads');
-    var res = await fetch('/api/chat/threads');
+    var res;
+    try {
+      res = await fetch('/api/chat/threads');
+    } catch (e) {
+      // The 15s list poll runs on its own: a dropped connection must
+      // not throw out of the interval.
+      box.innerHTML = '<p class="error">Could not load chats.</p>';
+      return;
+    }
     if (res.status === 401) { window.location.href = '/login'; return; }
     if (!res.ok) { box.innerHTML = '<p class="error">Could not load chats.</p>'; return; }
-    var data = await res.json();
+    var data = await res.json().catch(function () { return {}; });
     var threads = data.threads || [];
     if (!threads.length) {
       box.innerHTML = '<p class="muted">No active chats yet. Chat starts after your owner approves the link — a requested tenancy has no chat.</p>';
@@ -105,8 +120,14 @@
   async function openThread(id) {
     tenancyId = id;
     document.getElementById('thread-view').hidden = false;
-    var res = await fetch('/api/chat/threads');
-    var data = await res.json();
+    var data = { threads: [] };
+    try {
+      var res = await fetch('/api/chat/threads');
+      if (res.ok) data = await res.json().catch(function () { return { threads: [] }; });
+    } catch (e) {
+      // No thread header without the list — the messages still load
+      // below (and a 401 there sends the user to /login).
+    }
     var t = (data.threads || []).find(function (x) { return x.tenancy_id === id; });
     if (t) {
       document.getElementById('thread-title').textContent = t.house_title + ' — ' + t.other_name;
@@ -175,7 +196,13 @@
   }
 
   async function init() {
-    var meRes = await fetch('/api/auth/me');
+    var meRes;
+    try {
+      meRes = await fetch('/api/auth/me');
+    } catch (e) {
+      window.location.href = '/login';
+      return;
+    }
     if (meRes.status !== 200) { window.location.href = '/login'; return; }
     var meData = await meRes.json();
     me = meData.user;

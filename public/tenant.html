@@ -17,7 +17,7 @@
   <span class="lock-pill">🔒 Private</span>
 </header>
 <main>
-  <p><a class="back-link" href="/">← Back to home</a></p>
+  <p><a class="back-link" href="/">← Back to home</a> &nbsp; <a class="back-link" href="/login" id="logout-link">Log out</a></p>
   <p class="tag" id="who" role="status"></p>
 
   <section class="card">
@@ -51,6 +51,12 @@
   </section>
 
   <section class="card">
+    <h2>Past tenancies</h2>
+    <p class="muted">Tenancies that ended. They stay read-only — the history is the proof.</p>
+    <div id="history"></div>
+  </section>
+
+  <section class="card">
     <h2>Legal checklist</h2>
     <p class="muted">General information, not legal advice — check with the Rent Registrar / a lawyer. Rent law is provincial and changes.</p>
     <ul id="checklist">
@@ -61,9 +67,21 @@
     </ul>
     <div id="checklist-status"></div>
   </section>
+  <section class="card">
+    <h2>Change password</h2>
+    <form id="cp-form">
+      <label for="cp-current">Current password</label>
+      <input id="cp-current" type="password" required minlength="8" autocomplete="current-password">
+      <label for="cp-next">New password (at least 8 characters)</label>
+      <input id="cp-next" type="password" required minlength="8" autocomplete="new-password">
+      <p><button class="small" type="submit">Change password</button> <span class="tag" id="cp-msg" role="status"></span></p>
+    </form>
+    <p class="muted">Changing your password logs out your other devices.</p>
+  </section>
 </main>
 <script src="/bell.js"></script>
 <script src="/chat-badge.js"></script>
+<script src="/change-password.js"></script>
 <script src="/tenant.js"></script>
 </body>
 </html>

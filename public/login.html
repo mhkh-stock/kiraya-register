@@ -134,7 +134,15 @@
         body: JSON.stringify(body)
       });
       var data = await res.json().catch(function () { return {}; });
-      if (res.ok) { msg.textContent = 'Registered — welcome, ' + (data.user && data.user.display_name ? data.user.display_name : '') + '.'; }
+      if (res.ok) {
+        // Registration already set the session cookie — land on the
+        // dashboard instead of leaving the user to log in again with
+        // the password they just typed. (Named userRole, not role:
+        // the outer `role` is the role <select> and a local `var role`
+        // would shadow it — the register body reads role.value.)
+        var userRole = (data.user && data.user.role) || 'owner';
+        window.location.href = userRole === 'tenant' ? '/tenant' : '/owner';
+      }
       else { msg.textContent = data.error || ('Registration failed (' + res.status + ').'); }
     } catch (err) { msg.textContent = 'Could not reach the server. Please try again.'; }
   });

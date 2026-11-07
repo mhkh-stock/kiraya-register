@@ -184,6 +184,24 @@ CREATE TABLE IF NOT EXISTS audit (
   if (!cols.includes('delivered_at')) db.exec('ALTER TABLE messages ADD COLUMN delivered_at INTEGER');
 }
 
+// Review migration (2026-11-07): bill_schedules gains created_at so lazy
+// bill generation can start a schedule in the month it was created, not
+// the tenancy's first month. Existing rows get the migration time, so
+// they never backfill before it — no invented past bills.
+{
+  const cols = db.prepare('PRAGMA table_info(bill_schedules)').all().map((c) => c.name);
+  if (!cols.includes('created_at')) db.exec("ALTER TABLE bill_schedules ADD COLUMN created_at TEXT DEFAULT (datetime('now'))");
+}
+
+// Review migration (2026-11-07): notifications gains a dedup column so
+// one notification per bill per kind is enforced on the bill, not the
+// tenancy. Rows written before this migration have dedup '' and can
+// notify once more for the same bill, then dedup applies.
+{
+  const cols = db.prepare('PRAGMA table_info(notifications)').all().map((c) => c.name);
+  if (!cols.includes('dedup')) db.exec("ALTER TABLE notifications ADD COLUMN dedup TEXT DEFAULT ''");
+}
+
 // ---- crypto helpers (Bijli pattern) ----
 function hashPassword(password) {
   const salt = crypto.randomBytes(16);
@@ -330,6 +348,24 @@ function registerCounted(ip) {
   if (now - rec.firstAt > 60 * 60 * 1000) { rec.count = 0; rec.firstAt = now; }
   rec.count++;
   registerCounts.set(ip, rec);
+}
+
+// Uploads: max 30/hour per account (every attempt counts). The 5 MB cap
+// + per-house/per-payment caps bound one upload, but nothing bounded
+// how many an account could store — houses are uncapped, so an account
+// could otherwise fill the disk 8 photos at a time. 30/hour is far
+// above real use (a house tops out at 8 photos) and stops the flood.
+// The limit reads UPLOAD_LIMIT_PER_HOUR so tests can raise it.
+const UPLOAD_LIMIT_PER_HOUR = Number(process.env.UPLOAD_LIMIT_PER_HOUR || 30);
+const uploadCounts = new Map(); // userId -> { count, firstAt }
+function uploadAllowed(userId) {
+  const now = Date.now();
+  const rec = uploadCounts.get(userId) || { count: 0, firstAt: now };
+  if (now - rec.firstAt > 60 * 60 * 1000) { rec.count = 0; rec.firstAt = now; }
+  if (rec.count >= UPLOAD_LIMIT_PER_HOUR) return false;
+  rec.count++;
+  uploadCounts.set(userId, rec);
+  return true;
 }
 
 // ---- HTTP helpers ----
@@ -552,13 +588,18 @@ function cleanHouseBody(body, partial) {
   }
   if (need('bills_included')) {
     let arr = body.bills_included;
-    if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { return { error: 'bills_included must be a JSON array' }; } }
-    if (!Array.isArray(arr)) return { error: 'bills_included must be an array' };
-    if (arr.length > 10) return { error: 'bills_included has too many entries (max 10)' };
-    for (const item of arr) {
-      if (typeof item !== 'string' || !BILL_KINDS.has(item)) return { error: 'bills_included entries must be rent, gas, electricity, water, internet, maintenance or other' };
+    // A missing list is an empty list (like city/area default to '') —
+    // the smoke run showed create failing without it.
+    if (arr === undefined && !partial) { values.bills_included = '[]'; }
+    else {
+      if (typeof arr === 'string') { try { arr = JSON.parse(arr); } catch { return { error: 'bills_included must be a JSON array' }; } }
+      if (!Array.isArray(arr)) return { error: 'bills_included must be an array' };
+      if (arr.length > 10) return { error: 'bills_included has too many entries (max 10)' };
+      for (const item of arr) {
+        if (typeof item !== 'string' || !BILL_KINDS.has(item)) return { error: 'bills_included entries must be rent, gas, electricity, water, internet, maintenance or other' };
+      }
+      values.bills_included = JSON.stringify([...new Set(arr)]);
     }
-    values.bills_included = JSON.stringify([...new Set(arr)]);
   }
   if (need('maps_url')) {
     const v = String(body.maps_url ?? '').trim();
@@ -654,9 +695,12 @@ function tenantTenancyView(t) {
   };
 }
 // ---- Phase 3: lazy monthly bill generation + notifications ----
-// No cron in zero-dep: bills for the CURRENT month are generated when
-// either party opens the tenancy, and on server start. Generating twice
-// must never duplicate (UNIQUE(schedule_id, month) + INSERT OR IGNORE).
+// No cron in zero-dep: bills are generated when either party opens the
+// tenancy, and on server start — for every month from the tenancy's
+// start month (or a schedule's creation month, whichever is later)
+// through the current month, so a month nobody opened the app still
+// gets its bill. Generating twice must never duplicate
+// (UNIQUE(schedule_id, month) + INSERT OR IGNORE).
 function localToday() { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() + 1, day: d.getDate() }; }
 function monthStr(y, m) { return y + '-' + String(m).padStart(2, '0'); }
 function currentMonth() { const t = localToday(); return monthStr(t.y, t.m); }
@@ -765,45 +809,89 @@ function sendCsv(res, filename, text) {
   res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="' + filename + '"', 'Content-Length': Buffer.byteLength(text) });
   res.end(text);
 }
-// One notification per bill per kind: the link names the bill's tenancy,
-// so a second call for the same bill + kind finds the existing row.
-function notifyOnce(userId, kind, title, body, link) {
-  const ex = db.prepare('SELECT id FROM notifications WHERE user_id = ? AND kind = ? AND link = ?').get(userId, kind, link);
+// One notification per bill per kind: the dedup key names the bill, so
+// two bills of one tenancy due in the same window each notify once.
+// The stored link stays the tenancy page (existing clients/tests read
+// it); the dedup key lives in its own column.
+function notifyOnce(userId, kind, title, body, link, dedupKey) {
+  const key = dedupKey || link;
+  const ex = db.prepare('SELECT id FROM notifications WHERE user_id = ? AND kind = ? AND dedup = ?').get(userId, kind, key);
   if (ex) return;
-  db.prepare('INSERT INTO notifications(user_id, kind, title, body, link) VALUES(?,?,?,?,?)')
-    .run(userId, kind, title, body, link);
+  db.prepare('INSERT INTO notifications(user_id, kind, title, body, link, dedup) VALUES(?,?,?,?,?,?)')
+    .run(userId, kind, title, body, link, key);
 }
 function notifyForBill(bill, tenancy) {
   const today = todayStr();
   const link = '/tenancy?id=' + tenancy.id;
+  const dedupKey = link + '#bill-' + bill.id;
   const label = bill.schedule_label || bill.schedule_kind || 'Bill';
   const amt = bill.amount_pkr == null ? 'amount not entered yet' : 'Rs ' + bill.amount_pkr;
   const body = label + ' for ' + bill.month + ' — ' + amt + ', due ' + bill.due_date + '.';
   if ((bill.status === 'due' || bill.status === 'overdue') && bill.due_date < today) {
     for (const uid of [tenancy.owner_id, tenancy.tenant_id]) {
-      notifyOnce(uid, 'bill_overdue', 'Bill overdue', body, link);
+      notifyOnce(uid, 'bill_overdue', 'Bill overdue', body, link, dedupKey);
     }
   } else if (bill.status === 'due') {
     const days = daysBetween(today, bill.due_date);
     if (days >= 0 && days <= 3) {
       const title = days === 0 ? 'Bill due today' : 'Bill due in ' + days + ' day' + (days === 1 ? '' : 's');
       for (const uid of [tenancy.owner_id, tenancy.tenant_id]) {
-        notifyOnce(uid, 'bill_due', title, body, link);
+        notifyOnce(uid, 'bill_due', title, body, link, dedupKey);
       }
     }
   }
 }
+function monthKey(y, m) { return y * 12 + (m - 1); }
+function monthStrFromKey(k) { return Math.floor(k / 12) + '-' + String((k % 12) + 1).padStart(2, '0'); }
 function generateBillsForTenancy(tenancyId) {
   const tenancy = db.prepare('SELECT * FROM tenancies WHERE id = ?').get(tenancyId);
   if (!tenancy || tenancy.status !== 'active') return;
-  const month = currentMonth();
+  const cur = currentMonth();
+  const [curY, curM] = cur.split('-').map(Number);
+  const curKey = monthKey(curY, curM);
+  // Bills start in the tenancy's start month — never before it, and
+  // never for a future start date (start month after this month means
+  // no bills yet). They stop at the tenancy's end month, if one is set.
+  let startKey = curKey;
+  if (tenancy.start_date) {
+    const [y, m] = tenancy.start_date.slice(0, 7).split('-').map(Number);
+    if (y && m) startKey = monthKey(y, m);
+  }
+  let endKey = curKey;
+  if (tenancy.end_date) {
+    const [y, m] = tenancy.end_date.slice(0, 7).split('-').map(Number);
+    if (y && m) endKey = Math.min(curKey, monthKey(y, m));
+  }
+  if (startKey > endKey) return;
   const schedules = db.prepare('SELECT * FROM bill_schedules WHERE tenancy_id = ? AND active = 1').all(tenancyId);
   for (const s of schedules) {
-    // Rent bills: fixed amount from the schedule, due on the due_day.
-    // Variable bills: amount NULL until the owner enters it — the bill
-    // shows "Amount not entered yet", never an invented figure.
-    db.prepare(`INSERT OR IGNORE INTO bills(schedule_id, tenancy_id, month, amount_pkr, due_date, status)
-      VALUES(?,?,?,?,?,'due')`).run(s.id, tenancyId, month, s.amount_pkr, dueDateFor(month, s.due_day));
+    // A schedule only bills from the month it was created: a gas
+    // schedule added this month never invents bills for earlier months.
+    // (Rows predating the created_at migration start at the migration
+    // month, never earlier.) Rent is the exception: its schedule is
+    // created at approval but the obligation starts with the tenancy,
+    // so rent bills from the tenancy's start month.
+    let sStart = startKey;
+    if (s.kind !== 'rent' && s.created_at) {
+      const [y, m] = String(s.created_at).slice(0, 7).split('-').map(Number);
+      if (y && m) sStart = Math.max(startKey, monthKey(y, m));
+    }
+    for (let k = sStart; k <= endKey; k++) {
+      const month = monthStrFromKey(k);
+      // One rent bill per month per tenancy: a re-approved tenancy
+      // gets a fresh rent schedule, but the month it already billed
+      // under the old schedule is not billed twice.
+      if (s.kind === 'rent') {
+        const already = db.prepare(`SELECT b.id FROM bills b JOIN bill_schedules s2 ON s2.id = b.schedule_id
+          WHERE b.tenancy_id = ? AND b.month = ? AND s2.kind = 'rent' LIMIT 1`).get(tenancyId, month);
+        if (already) continue;
+      }
+      // Rent bills: fixed amount from the schedule, due on the due_day.
+      // Variable bills: amount NULL until the owner enters it — the bill
+      // shows "Amount not entered yet", never an invented figure.
+      db.prepare(`INSERT OR IGNORE INTO bills(schedule_id, tenancy_id, month, amount_pkr, due_date, status)
+        VALUES(?,?,?,?,?,'due')`).run(s.id, tenancyId, month, s.amount_pkr, dueDateFor(month, s.due_day));
+    }
   }
   // A bill becomes overdue when today passes its due_date and it is still unpaid.
   db.prepare("UPDATE bills SET status = 'overdue' WHERE tenancy_id = ? AND status = 'due' AND due_date < ?")
@@ -985,8 +1073,14 @@ const server = http.createServer(async (req, res) => {
       if (next.length < 8) return sendJson(res, 400, { error: 'new password must be at least 8 characters' });
       if (next === current) return sendJson(res, 400, { error: 'new password must be different from the current one' });
       db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(next), u.id);
+      // Like logout, suspend and master reset, a password change ends
+      // every other session (a stolen session must not survive the
+      // change) — and the changing browser gets a fresh session cookie
+      // so it stays logged in.
+      killAllSessions(u.id);
+      const cookie = setSessionCookie(res, u);
       audit('auth.password-change', u, 'user', u.id, 'password changed');
-      return sendJson(res, 200, { ok: true });
+      return sendJson(res, 200, { ok: true }, { 'Set-Cookie': cookie });
     }
 
     // ---- Phase 2: house photos served (owner-scoped in Phase 2) ----
@@ -1103,6 +1197,7 @@ const server = http.createServer(async (req, res) => {
       // POST /api/owner/houses/:id/photos (multipart)
       if (sub === '/photos' && req.method === 'POST') {
         if (!csrfOk(req)) return sendJson(res, 403, { error: 'bad origin' });
+        if (!uploadAllowed(u.id)) return sendJson(res, 429, { error: 'too many uploads — try again later' });
         let parsed;
         try {
           parsed = await parseMultipartBody(req, PHOTO_MAX_BYTES + 65536);
@@ -1192,14 +1287,27 @@ const server = http.createServer(async (req, res) => {
       const policeRegistered = body.police_registered ? 1 : 0;
       const house = db.prepare('SELECT * FROM houses WHERE id = ?').get(tenancy.house_id);
       if (!house || house.status !== 'vacant') return sendJson(res, 400, { error: 'this house is no longer vacant' });
+      // One active tenancy per tenant: the link step checks this, but a
+      // tenant can hold two PENDING requests — approving the second
+      // while the first is already active must fail too.
+      const otherActive = db.prepare("SELECT id FROM tenancies WHERE tenant_id = ? AND status = 'active' AND id != ?").get(tenancy.tenant_id, tenancy.id);
+      if (otherActive) return sendJson(res, 409, { error: 'this tenant already has an active tenancy — one at a time' });
       db.prepare(`UPDATE tenancies SET status = 'active', rent_pkr = ?, advance_pkr = ?, due_day = ?,
         start_date = ?, end_date = ?, agreement_note = ?, agreement_registered = ?, police_registered = ?,
         decided_by = ?, decided_at = ?, decide_reason = ? WHERE id = ?`)
         .run(rent, advance ?? tenancy.advance_pkr, dueDay, startDate, endDate, agreementNote,
           agreementRegistered, policeRegistered, u.id, now, reason, tenancy.id);
+      // A re-approved tenancy (ended, then linked again) reuses its row:
+      // the old rent schedule is retired first, so the tenancy never
+      // bills rent twice in one month. Other schedules (gas, etc.) stay
+      // as they were.
+      db.prepare("UPDATE bill_schedules SET active = 0 WHERE tenancy_id = ? AND kind = 'rent'").run(tenancy.id);
       db.prepare(`INSERT INTO bill_schedules(tenancy_id, kind, label, amount_pkr, due_day, active, note, created_by)
         VALUES(?, 'rent', 'Monthly rent', ?, ?, 1, '', ?)`).run(tenancy.id, rent, dueDay, u.id);
       db.prepare("UPDATE houses SET status = 'occupied' WHERE id = ?").run(house.id);
+      // Bills for the current month exist from approval onward, even if
+      // nobody opens the tenancy again before it ends.
+      generateBillsForTenancy(tenancy.id);
       audit('link.approved', u, 'tenancy', tenancy.id, 'link approved: rent ' + rent + ', due day ' + dueDay + ', from ' + startDate);
       db.prepare("INSERT INTO notifications(user_id, kind, title, body, link) VALUES(?, 'link_approved', ?, ?, ?)")
         .run(tenancy.tenant_id, 'Link request approved', 'Your tenancy is active.', '/tenant');
@@ -1267,6 +1375,12 @@ const server = http.createServer(async (req, res) => {
       if (error) return sendJson(res, 400, { error });
       if (values.due_day === undefined) return sendJson(res, 400, { error: 'due_day must be a whole number between 1 and 28' });
       if (values.kind === undefined) return sendJson(res, 400, { error: 'kind must be rent, gas, electricity, water, internet, maintenance or other' });
+      // Rent already has exactly one schedule, created at approval — a
+      // second one would bill rent twice in the same month.
+      if (values.kind === 'rent') {
+        const existingRent = db.prepare("SELECT id FROM bill_schedules WHERE tenancy_id = ? AND kind = 'rent' AND active = 1").get(tenancy.id);
+        if (existingRent) return sendJson(res, 400, { error: 'this tenancy already has a rent schedule — rent is set when the owner approves the link' });
+      }
       const info = db.prepare(`INSERT INTO bill_schedules(tenancy_id, kind, label, amount_pkr, due_day, active, note, created_by)
         VALUES(?,?,?,?,?,1,?,?)`).run(tenancy.id, values.kind, values.label || '', values.amount_pkr ?? null,
         values.due_day, values.note || '', u.id);
@@ -1305,11 +1419,24 @@ const server = http.createServer(async (req, res) => {
         if (Object.keys(body).length === 0) return sendJson(res, 400, { error: 'nothing to update' });
         const { error, values } = cleanScheduleBody(body, true);
         if (error) return sendJson(res, 400, { error });
+        if (schedule.kind === 'rent' && Object.prototype.hasOwnProperty.call(values, 'amount_pkr') && values.amount_pkr === null) {
+          return sendJson(res, 400, { error: 'rent must have a fixed amount — only utility bills can be variable' });
+        }
         const sets = [];
         const args = [];
         for (const [k, v] of Object.entries(values)) { sets.push(k + ' = ?'); args.push(v); }
         if (!sets.length) return sendJson(res, 400, { error: 'nothing to update' });
         db.prepare('UPDATE bill_schedules SET ' + sets.join(', ') + ' WHERE id = ?').run(...args, scheduleId);
+        // The rent schedule IS the tenancy's rent: editing its amount
+        // or due day must move the tenancy's own rent/due day too, or
+        // the tenancy page and the bills would disagree.
+        if (schedule.kind === 'rent') {
+          const tSets = [];
+          const tArgs = [];
+          if (values.amount_pkr !== undefined && values.amount_pkr !== null) { tSets.push('rent_pkr = ?'); tArgs.push(values.amount_pkr); }
+          if (values.due_day !== undefined) { tSets.push('due_day = ?'); tArgs.push(values.due_day); }
+          if (tSets.length) db.prepare('UPDATE tenancies SET ' + tSets.join(', ') + ' WHERE id = ?').run(...tArgs, schedule.tenancy_id);
+        }
         audit('schedule.updated', u, 'schedule', scheduleId, 'schedule ' + scheduleId + ' updated');
         const row = db.prepare('SELECT id, kind, label, amount_pkr, due_day, active, note FROM bill_schedules WHERE id = ?').get(scheduleId);
         return sendJson(res, 200, { ok: true, schedule: row });
@@ -1403,7 +1530,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/owner/payments/pending' && req.method === 'GET') {
       const u = sessionUser(req);
       if (!requireRole(u, 'owner', res)) return;
-      const rows = db.prepare(`SELECT p.*, b.month AS bill_month, s.kind AS schedule_kind, s.label AS schedule_label,
+      const rows = db.prepare(`SELECT p.*, b.month AS bill_month, b.amount_pkr AS bill_amount_pkr, s.kind AS schedule_kind, s.label AS schedule_label,
           h.title AS house_title, tu.display_name AS tenant_name
         FROM payments p JOIN bills b ON b.id = p.bill_id
         JOIN bill_schedules s ON s.id = b.schedule_id
@@ -1415,6 +1542,7 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { payments: rows.map((r) => {
         const v = paymentView(r);
         v.tenant_name = r.tenant_name; v.house_title = r.house_title;
+        v.bill_amount_pkr = r.bill_amount_pkr;
         return v;
       }) });
     }
@@ -1531,6 +1659,18 @@ const server = http.createServer(async (req, res) => {
         bills,
       });
     }
+    // ---- Phase 4: tenant history — ended tenancies stay readable ----
+    // /api/tenant/tenancy + /api/tenant/bills cover the current tenancy
+    // only, so after a tenancy ended the tenant lost its bills and
+    // payments (only receipts stayed). History returns ended tenancies
+    // with their full record, scoped to the caller.
+    if (p === '/api/tenant/history' && req.method === 'GET') {
+      const u = sessionUser(req);
+      if (!requireRole(u, 'tenant', res)) return;
+      const rows = db.prepare(`SELECT * FROM tenancies WHERE tenant_id = ? AND status = 'ended'
+        ORDER BY created_at DESC, id DESC`).all(u.id);
+      return sendJson(res, 200, { tenancies: rows.map(tenantTenancyView) });
+    }
     // ---- Phase 4: tenant payment submission (proof photo + amount + method) ----
     if (p === '/api/tenant/payments' && req.method === 'POST') {
       const u = sessionUser(req);
@@ -1540,6 +1680,7 @@ const server = http.createServer(async (req, res) => {
       let fields = {};
       let files = [];
       if (ct.includes('multipart/form-data')) {
+        if (!uploadAllowed(u.id)) return sendJson(res, 429, { error: 'too many uploads — try again later' });
         let parsed;
         try {
           parsed = await parseMultipartBody(req, PHOTO_MAX_BYTES + 65536);
@@ -1716,6 +1857,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 201, { ok: true, message: messageView(m) });
       }
       // POST photo message: magic bytes FIRST, extension second and matching.
+      if (!uploadAllowed(u.id)) return sendJson(res, 429, { error: 'too many uploads — try again later' });
       let parsed;
       try {
         parsed = await parseMultipartBody(req, PHOTO_MAX_BYTES + 65536);

@@ -189,6 +189,28 @@
       : '<p class="muted">No receipts yet — a receipt appears here once your owner approves a payment.</p>';
   }
 
+  async function loadHistory() {
+    var box = el('history');
+    if (!box) return;
+    var r = await api('GET', '/api/tenant/history');
+    if (r.status !== 200) { box.textContent = 'Could not load your past tenancies.'; return; }
+    var list = r.data.tenancies || [];
+    if (!list.length) {
+      box.innerHTML = '<p class="muted">No past tenancies yet.</p>';
+      return;
+    }
+    box.innerHTML = list.map(function (t) {
+      var bills = (t.bills || []).length;
+      var paid = (t.bills || []).filter(function (b) { return b.status === 'paid'; }).length;
+      var receipts = (t.receipts || []).length;
+      return '<div class="sum-row"><span class="nm"><strong>' + esc(t.house.title || '') + '</strong>'
+        + '<span class="sub">' + esc(t.house.kind || '') + ' · ' + esc(t.house.address || '') + (t.house.city ? ', ' + esc(t.house.city) : '') + '</span>'
+        + '<span class="sub">Owner: ' + esc(t.owner.display_name) + ' · Rent ' + rs(t.rent_pkr) + '/month · ended</span>'
+        + '<span class="sub">' + bills + ' bill' + (bills === 1 ? '' : 's') + ' · ' + paid + ' paid · ' + receipts + ' receipt' + (receipts === 1 ? '' : 's') + '</span></span>'
+        + '<span class="sum-actions"><a class="pill" href="/tenancy?id=' + t.id + '">Open</a></span></div>';
+    }).join('');
+  }
+
   el('link-form').addEventListener('submit', async function (e) {
     e.preventDefault();
     el('link-msg').textContent = '';
@@ -209,5 +231,6 @@
     loadTenancy();
     loadBills();
     loadReceipts();
+    loadHistory();
   })();
 })();

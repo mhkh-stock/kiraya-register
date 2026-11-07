@@ -355,9 +355,15 @@
     box.innerHTML = list.map(function (p) {
       var proof = p.proof_file_url
         ? '<a class="pill" href="' + esc(p.proof_file_url) + '" target="_blank" rel="noopener">View proof photo</a>' : '';
+      // The bill amount sits next to the paid amount: approving a part
+      // payment by mistake used to be one careless tap away.
+      var billAmt = (p.bill_amount_pkr == null) ? '' : '<span class="sub">Bill: ' + rs(p.bill_amount_pkr) + '</span>';
+      var mismatch = (p.bill_amount_pkr != null && Number(p.amount_pkr) !== Number(p.bill_amount_pkr))
+        ? '<span class="sub"><strong>⚠ Paid amount differs from the bill — check before approving.</strong></span>' : '';
       return '<div class="sum-row"><span class="nm"><strong>' + esc(p.tenant_name || '') + ' — ' + esc(p.house_title || '') + '</strong>'
         + '<span class="sub">' + esc(p.schedule_label || p.schedule_kind) + ' · ' + esc(p.bill_month || '') + ' · ' + esc(p.method)
-        + (p.txn_ref ? ' · ref ' + esc(p.txn_ref) : '') + (p.note ? ' · ' + esc(p.note) : '') + '</span></span>'
+        + (p.txn_ref ? ' · ref ' + esc(p.txn_ref) : '') + (p.note ? ' · ' + esc(p.note) : '') + '</span>'
+        + billAmt + mismatch + '</span>'
         + '<span class="amt">' + rs(p.amount_pkr) + '</span>'
         + '<span class="sum-actions">' + proof + '</span></div>'
         + '<div class="row"><label style="flex:1">Reason (required to reject) '

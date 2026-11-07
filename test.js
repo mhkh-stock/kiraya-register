@@ -198,8 +198,20 @@ async function main() {
     // --- change-password works + old password fails after ---
     r = await req('POST', '/api/auth/login', { ip: nextIp(), body: { gmail: 'owner1@gmail.com', password: 'ownerpass1' } });
     const cpCookie = cookieOf(r);
+    // A second session for the same account, open before the change.
+    r = await req('POST', '/api/auth/login', { ip: nextIp(), body: { gmail: 'owner1@gmail.com', password: 'ownerpass1' } });
+    const cpCookie2 = cookieOf(r);
+    check('second login before change-password 200', r.status === 200 && !!cpCookie2, r.status + ' ' + r.text);
     r = await req('POST', '/api/auth/change-password', { cookie: cpCookie, body: { current: 'ownerpass1', next: 'ownerpass2' } });
     check('change-password 200', r.status === 200, r.status + ' ' + r.text);
+    check('change-password returns a fresh session cookie for this browser',
+      !!cookieOf(r), 'no Set-Cookie on the change-password response');
+    r = await req('GET', '/api/auth/me', { cookie: cookieOf(r) || cpCookie });
+    check('changing browser stays logged in on the fresh cookie', r.status === 200, r.status + ' ' + r.text);
+    r = await req('GET', '/api/auth/me', { cookie: cpCookie2 });
+    check('change-password kills other sessions (/me 401)', r.status === 401, r.status + ' ' + r.text);
+    r = await req('GET', '/api/auth/me', { cookie: cpCookie });
+    check('change-password kills the old cookie of this browser too (/me 401)', r.status === 401, r.status + ' ' + r.text);
     r = await req('POST', '/api/auth/login', { ip: nextIp(), body: { gmail: 'owner1@gmail.com', password: 'ownerpass1' } });
     check('old password fails after change-password', r.status === 401, r.status + ' ' + r.text);
     r = await req('POST', '/api/auth/login', { ip: nextIp(), body: { gmail: 'owner1@gmail.com', password: 'ownerpass2' } });
@@ -798,6 +810,26 @@ async function main() {
     r = await req('GET', '/api/notifications', { cookie: tenantD.cookie });
     check('bill notifications dedupe: re-opening adds no duplicate per bill per kind',
       billNotifCount(r.json.notifications) === before, before + ' -> ' + billNotifCount(r.json.notifications));
+    // Review fix: the dedup used to key on the tenancy link, so a
+    // second bill due in the same window never notified. A water bill
+    // due in the window must add exactly one notification of its own.
+    const waterDueDay = todayDay <= 26 ? todayDay + 2 : 1;
+    r = await req('POST', '/api/owner/schedules', { cookie: ownerC.cookie, body: { tenancy_id: tenancyC, kind: 'water', label: 'Water', amount_pkr: null, due_day: waterDueDay } });
+    check('review: water schedule added for the per-bill notification test', r.status === 201, r.status + ' ' + r.text);
+    r = await req('GET', '/api/tenant/bills', { cookie: tenantD.cookie });
+    check('review: water bill generated for the current month',
+      (r.json.bills || []).some((b) => b.schedule_kind === 'water' && b.month === curMonth), JSON.stringify((r.json.bills || []).map((b) => [b.schedule_kind, b.month])));
+    r = await req('GET', '/api/notifications', { cookie: tenantD.cookie });
+    check('review: a second bill due in the window notifies once (per bill, not per tenancy)',
+      billNotifCount(r.json.notifications) === before + 1, before + ' -> ' + billNotifCount(r.json.notifications));
+    check('review: the new notification names the water bill',
+      (r.json.notifications || []).some((n) => (n.kind === 'bill_due' || n.kind === 'bill_overdue')
+        && n.link === '/tenancy?id=' + tenancyC && n.body.includes('Water for ' + curMonth)),
+      JSON.stringify((r.json.notifications || []).map((n) => n.kind + ':' + n.body)));
+    r = await req('GET', '/api/owner/tenancies/' + tenancyC, { cookie: ownerC.cookie });
+    r = await req('GET', '/api/notifications', { cookie: tenantD.cookie });
+    check('review: re-opening still adds no duplicate for the water bill',
+      billNotifCount(r.json.notifications) === before + 1, before + ' -> ' + billNotifCount(r.json.notifications));
     const notifD = (r.json.notifications || [])[0];
     r = await req('POST', '/api/notifications/' + notifD.id + '/read', { cookie: tenantB.cookie });
     check('mark-read on foreign notification → 403', r.status === 403, r.status + ' ' + r.text);
@@ -1551,6 +1583,270 @@ async function main() {
     e2ePay = await uploadPayment(e2eTenant.cookie, { bill_id: e2eRent.id, amount_pkr: 35000, method: 'cash' }, JPEG, 'e2e2.jpg');
     check('E2E: new payment blocked after end → 400', e2ePay.status === 400, e2ePay.status + ' ' + e2ePay.text);
 
+    // ================= Review (2026-11-07): fixes + market improvements =================
+    // (a) Double approval: a tenant with two PENDING requests must not
+    // end up with two ACTIVE tenancies when both owners approve.
+    const dblOwnerA = await makeUser('owner', { name: 'Double Owner A' });
+    const dblOwnerB = await makeUser('owner', { name: 'Double Owner B' });
+    const dblTenant = await makeUser('tenant', { name: 'Double Tenant' });
+    r = await req('POST', '/api/owner/houses', { cookie: dblOwnerA.cookie, body: houseBody({ title: 'Double House A', rent_pkr: 30000 }) });
+    const dblHouseA = r.json.house;
+    r = await req('GET', '/api/owner/houses/' + dblHouseA.id + '/code', { cookie: dblOwnerA.cookie });
+    const dblCodeA = r.json.code;
+    r = await req('POST', '/api/owner/houses', { cookie: dblOwnerB.cookie, body: houseBody({ title: 'Double House B', rent_pkr: 25000 }) });
+    const dblHouseB = r.json.house;
+    r = await req('GET', '/api/owner/houses/' + dblHouseB.id + '/code', { cookie: dblOwnerB.cookie });
+    const dblCodeB = r.json.code;
+    r = await req('POST', '/api/tenant/link', { ip: nextIp(), cookie: dblTenant.cookie, body: { code: dblCodeA } });
+    check('review: tenant holds a pending request at house A', r.status === 201 && r.json.tenancy.status === 'requested', r.status + ' ' + r.text);
+    const dblTenA = r.json.tenancy.id;
+    r = await req('POST', '/api/tenant/link', { ip: nextIp(), cookie: dblTenant.cookie, body: { code: dblCodeB } });
+    check('review: tenant holds a second pending request at house B', r.status === 201 && r.json.tenancy.status === 'requested', r.status + ' ' + r.text);
+    const dblTenB = r.json.tenancy.id;
+    r = await req('POST', '/api/owner/link-requests/decide', { cookie: dblOwnerA.cookie, body: { tenancy_id: dblTenA, decision: 'approve', rent_pkr: 30000, due_day: 5, start_date: '2026-11-01' } });
+    check('review: first approval → active', r.status === 200 && r.json.tenancy.status === 'active', r.status + ' ' + r.text);
+    r = await req('POST', '/api/owner/link-requests/decide', { cookie: dblOwnerB.cookie, body: { tenancy_id: dblTenB, decision: 'approve', rent_pkr: 25000, due_day: 5, start_date: '2026-11-01' } });
+    check('review: second approval for the same tenant → 409 (one active tenancy)',
+      r.status === 409 && /already has an active tenancy/.test(r.json.error || ''), r.status + ' ' + r.text);
+    r = await req('GET', '/api/tenant/tenancy', { cookie: dblTenant.cookie });
+    check('review: tenant still sees only the first tenancy as active',
+      r.status === 200 && r.json.tenancy && r.json.tenancy.id === dblTenA, r.status + ' ' + r.text);
+    r = await req('POST', '/api/owner/tenancies/' + dblTenA + '/end', { cookie: dblOwnerA.cookie, body: { reason: 'review cleanup' } });
+    check('review: first tenancy ended (cleanup)', r.status === 200 && r.json.tenancy.status === 'ended', r.status + ' ' + r.text);
+
+    // (b) Re-approval after an end: one rent schedule, one rent bill.
+    const reOwner = await makeUser('owner', { name: 'Re Owner' });
+    const reTenant = await makeUser('tenant', { name: 'Re Tenant' });
+    r = await req('POST', '/api/owner/houses', { cookie: reOwner.cookie, body: houseBody({ title: 'Re House', rent_pkr: 30000 }) });
+    const reHouse = r.json.house;
+    r = await req('GET', '/api/owner/houses/' + reHouse.id + '/code', { cookie: reOwner.cookie });
+    const reCode1 = r.json.code;
+    r = await req('POST', '/api/tenant/link', { ip: nextIp(), cookie: reTenant.cookie, body: { code: reCode1 } });
+    const reTen = r.json.tenancy.id;
+    r = await req('POST', '/api/owner/link-requests/decide', { cookie: reOwner.cookie, body: { tenancy_id: reTen, decision: 'approve', rent_pkr: 30000, due_day: 5, start_date: '2026-11-01' } });
+    check('review: approve (first period) → active', r.status === 200 && r.json.tenancy.status === 'active', r.status + ' ' + r.text);
+    r = await req('POST', '/api/owner/tenancies/' + reTen + '/end', { cookie: reOwner.cookie, body: { reason: 'first period over' } });
+    check('review: end (first period) → ended', r.status === 200, r.status + ' ' + r.text);
+    r = await req('POST', '/api/owner/houses/' + reHouse.id + '/code/regenerate', { cookie: reOwner.cookie });
+    check('review: regenerate code after end', r.status === 200 && r.json.code, r.status + ' ' + r.text);
+    r = await req('POST', '/api/tenant/link', { ip: nextIp(), cookie: reTenant.cookie, body: { code: r.json.code } });
+    check('review: tenant re-links (same tenancy row)', r.status === 201 && r.json.tenancy.id === reTen && r.json.tenancy.status === 'requested', r.status + ' ' + r.text);
+    r = await req('POST', '/api/owner/link-requests/decide', { cookie: reOwner.cookie, body: { tenancy_id: reTen, decision: 'approve', rent_pkr: 32000, due_day: 5, start_date: '2026-11-01' } });
+    check('review: re-approve (second period) → active', r.status === 200 && r.json.tenancy.status === 'active' && r.json.tenancy.rent_pkr === 32000, r.status + ' ' + r.text);
+    r = await req('GET', '/api/owner/tenancies/' + reTen, { cookie: reOwner.cookie });
+    const reRentScheds = (r.json.tenancy.schedules || []).filter((s) => s.kind === 'rent' && s.active === 1);
+    check('review: exactly one active rent schedule after re-approve',
+      reRentScheds.length === 1 && reRentScheds[0].amount_pkr === 32000,
+      JSON.stringify(reRentScheds));
+    check('review: the old rent schedule is retired (active 0)',
+      (r.json.tenancy.schedules || []).filter((s) => s.kind === 'rent' && s.active === 0).length === 1,
+      JSON.stringify((r.json.tenancy.schedules || []).filter((s) => s.kind === 'rent')));
+    const reRentBills = (r.json.tenancy.bills || []).filter((b) => b.schedule_kind === 'rent' && b.month === curMonth);
+    check('review: exactly one rent bill for the current month after re-approve (no double billing)',
+      reRentBills.length === 1, JSON.stringify(reRentBills.map((b) => [b.id, b.schedule_id, b.amount_pkr])));
+
+    // (c) A second rent schedule cannot be added by hand, and editing
+    // the rent schedule moves the tenancy's rent with it.
+    r = await req('POST', '/api/owner/schedules', { cookie: reOwner.cookie, body: { tenancy_id: reTen, kind: 'rent', label: 'Second rent', amount_pkr: 1000, due_day: 5 } });
+    check('review: adding a second rent schedule → 400', r.status === 400, r.status + ' ' + r.text);
+    const reRentSchedId = reRentScheds[0].id;
+    r = await req('PUT', '/api/owner/schedules/' + reRentSchedId, { cookie: reOwner.cookie, body: { amount_pkr: 33000 } });
+    check('review: rent schedule amount edit 200', r.status === 200 && r.json.schedule.amount_pkr === 33000, r.status + ' ' + r.text);
+    r = await req('GET', '/api/owner/tenancies/' + reTen, { cookie: reOwner.cookie });
+    check('review: tenancy rent follows the rent schedule edit',
+      r.json.tenancy.rent_pkr === 33000, JSON.stringify(r.json.tenancy.rent_pkr));
+    r = await req('PUT', '/api/owner/schedules/' + reRentSchedId, { cookie: reOwner.cookie, body: { amount_pkr: null } });
+    check('review: rent schedule cannot go variable (null amount) → 400', r.status === 400, r.status + ' ' + r.text);
+
+    // (d) House create without bills_included defaults to an empty list.
+    r = await req('POST', '/api/owner/houses', { cookie: reOwner.cookie, body: { title: 'No Bills House', kind: 'house', address: '2 No Bills St', city: 'Lahore', rent_pkr: 10000 } });
+    check('review: house create without bills_included → 201 with empty list',
+      r.status === 201 && Array.isArray(r.json.house.bills_included) && r.json.house.bills_included.length === 0,
+      r.status + ' ' + r.text);
+
+    // (e) Bill backfill: a tenancy that started two months ago bills
+    // every month from its start month; a schedule added today bills
+    // only this month; a future start date bills nothing yet.
+    const d0 = new Date(nowD.getFullYear(), nowD.getMonth(), 1);
+    const fmtM = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    const mMinus2 = fmtM(new Date(d0.getFullYear(), d0.getMonth() - 2, 1));
+    const mMinus1 = fmtM(new Date(d0.getFullYear(), d0.getMonth() - 1, 1));
+    const mPlus1 = fmtM(new Date(d0.getFullYear(), d0.getMonth() + 1, 1));
+    const bfOwner = await makeUser('owner', { name: 'Backfill Owner' });
+    const bfTenant = await makeUser('tenant', { name: 'Backfill Tenant' });
+    r = await req('POST', '/api/owner/houses', { cookie: bfOwner.cookie, body: houseBody({ title: 'Backfill House', rent_pkr: 20000 }) });
+    const bfHouse = r.json.house;
+    r = await req('GET', '/api/owner/houses/' + bfHouse.id + '/code', { cookie: bfOwner.cookie });
+    r = await req('POST', '/api/tenant/link', { ip: nextIp(), cookie: bfTenant.cookie, body: { code: r.json.code } });
+    const bfTen = r.json.tenancy.id;
+    r = await req('POST', '/api/owner/link-requests/decide', { cookie: bfOwner.cookie, body: { tenancy_id: bfTen, decision: 'approve', rent_pkr: 20000, due_day: 5, start_date: mMinus2 + '-01' } });
+    check('review: approve with a start date two months ago → active', r.status === 200 && r.json.tenancy.status === 'active', r.status + ' ' + r.text);
+    r = await req('GET', '/api/owner/tenancies/' + bfTen, { cookie: bfOwner.cookie });
+    const bfRent = (r.json.tenancy.bills || []).filter((b) => b.schedule_kind === 'rent');
+    check('review: backfill creates one rent bill per month from the start month',
+      bfRent.length === 3 && bfRent.map((b) => b.month).sort().join(',') === [mMinus2, mMinus1, curMonth].sort().join(',')
+      && bfRent.every((b) => b.amount_pkr === 20000),
+      JSON.stringify(bfRent.map((b) => [b.month, b.amount_pkr, b.status])));
+    r = await req('POST', '/api/owner/schedules', { cookie: bfOwner.cookie, body: { tenancy_id: bfTen, kind: 'gas', label: 'SNGPL gas', amount_pkr: null, due_day: 10 } });
+    check('review: gas schedule added today 201', r.status === 201, r.status + ' ' + r.text);
+    r = await req('GET', '/api/owner/tenancies/' + bfTen, { cookie: bfOwner.cookie });
+    const bfGas = (r.json.tenancy.bills || []).filter((b) => b.schedule_kind === 'gas');
+    check('review: a schedule added today bills only the current month (no invented past bills)',
+      bfGas.length === 1 && bfGas[0].month === curMonth && bfGas[0].amount_pkr === null,
+      JSON.stringify(bfGas.map((b) => [b.month, b.amount_pkr])));
+    const futOwner = await makeUser('owner', { name: 'Future Owner' });
+    const futTenant = await makeUser('tenant', { name: 'Future Tenant' });
+    r = await req('POST', '/api/owner/houses', { cookie: futOwner.cookie, body: houseBody({ title: 'Future House', rent_pkr: 15000 }) });
+    const futHouse = r.json.house;
+    r = await req('GET', '/api/owner/houses/' + futHouse.id + '/code', { cookie: futOwner.cookie });
+    r = await req('POST', '/api/tenant/link', { ip: nextIp(), cookie: futTenant.cookie, body: { code: r.json.code } });
+    const futTen = r.json.tenancy.id;
+    r = await req('POST', '/api/owner/link-requests/decide', { cookie: futOwner.cookie, body: { tenancy_id: futTen, decision: 'approve', rent_pkr: 15000, due_day: 5, start_date: mPlus1 + '-01' } });
+    check('review: approve with a future start date → active', r.status === 200 && r.json.tenancy.status === 'active', r.status + ' ' + r.text);
+    r = await req('GET', '/api/owner/tenancies/' + futTen, { cookie: futOwner.cookie });
+    check('review: future start date generates no bills yet',
+      Array.isArray(r.json.tenancy.bills) && r.json.tenancy.bills.length === 0, JSON.stringify(r.json.tenancy.bills));
+
+    // (f) Tenant history: after the tenancy ends, the tenant still
+    // reads its bills, payments and receipts.
+    const hOwner = await makeUser('owner', { name: 'History Owner' });
+    const hTenant = await makeUser('tenant', { name: 'History Tenant' });
+    const hStranger = await makeUser('tenant', { name: 'History Stranger' });
+    r = await req('POST', '/api/owner/houses', { cookie: hOwner.cookie, body: houseBody({ title: 'History House', rent_pkr: 22000 }) });
+    const hHouse = r.json.house;
+    r = await req('GET', '/api/owner/houses/' + hHouse.id + '/code', { cookie: hOwner.cookie });
+    r = await req('POST', '/api/tenant/link', { ip: nextIp(), cookie: hTenant.cookie, body: { code: r.json.code } });
+    const hTen = r.json.tenancy.id;
+    r = await req('POST', '/api/owner/link-requests/decide', { cookie: hOwner.cookie, body: { tenancy_id: hTen, decision: 'approve', rent_pkr: 22000, due_day: 5, start_date: '2026-11-01' } });
+    check('review: history tenancy approved', r.status === 200 && r.json.tenancy.status === 'active', r.status + ' ' + r.text);
+    r = await req('GET', '/api/tenant/bills', { cookie: hTenant.cookie });
+    const hRent = (r.json.bills || []).find((b) => b.schedule_kind === 'rent');
+    check('review: history tenancy has a rent bill', !!hRent && hRent.amount_pkr === 22000, JSON.stringify(hRent));
+    let hPay = await uploadPayment(hTenant.cookie, { bill_id: hRent.id, amount_pkr: 22000, method: 'cash' }, JPEG, 'h.jpg');
+    check('review: history tenancy payment 201', hPay.status === 201, hPay.status + ' ' + hPay.text);
+    r = await req('POST', '/api/owner/payments/decide', { cookie: hOwner.cookie, body: { payment_id: hPay.json.payment.id, decision: 'approve' } });
+    check('review: history tenancy payment approved + receipt', r.status === 200 && r.json.receipt, r.status + ' ' + r.text);
+    const hReceipt = r.json.receipt.receipt_number;
+    r = await req('POST', '/api/owner/tenancies/' + hTen + '/end', { cookie: hOwner.cookie, body: { reason: 'history test' } });
+    check('review: history tenancy ended', r.status === 200 && r.json.tenancy.status === 'ended', r.status + ' ' + r.text);
+    r = await req('GET', '/api/tenant/tenancy', { cookie: hTenant.cookie });
+    check('review: current tenancy is null after the end', r.status === 200 && r.json.tenancy === null, r.status + ' ' + r.text);
+    r = await req('GET', '/api/tenant/bills', { cookie: hTenant.cookie });
+    check('review: current bills are empty after the end', r.status === 200 && (r.json.bills || []).length === 0, r.status + ' ' + r.text);
+    r = await req('GET', '/api/tenant/history', { cookie: hTenant.cookie });
+    check('review: history returns the ended tenancy with bills + payments + receipts',
+      r.status === 200 && (r.json.tenancies || []).length === 1 && r.json.tenancies[0].id === hTen
+      && (r.json.tenancies[0].bills || []).length >= 1
+      && (r.json.tenancies[0].payments || []).length >= 1
+      && (r.json.tenancies[0].receipts || []).some((rc) => rc.receipt_number === hReceipt),
+      r.status + ' ' + JSON.stringify(r.json).slice(0, 300));
+    r = await req('GET', '/api/tenant/history', { cookie: hStranger.cookie });
+    check('review: another tenant history is empty (never sees the tenancy)',
+      r.status === 200 && Array.isArray(r.json.tenancies) && r.json.tenancies.length === 0, r.status + ' ' + r.text);
+    r = await req('GET', '/api/tenant/history', { cookie: hOwner.cookie });
+    check('review: history 403 for owner', r.status === 403, r.status + ' ' + r.text);
+    r = await req('GET', '/api/tenant/history');
+    check('review: history 401 without login', r.status === 401, r.status + ' ' + r.text);
+
+    // (g) Upload rate limit: 30/hour per account, 31st attempt → 429.
+    const ulOwner = await makeUser('owner', { name: 'Upload Limit Owner' });
+    r = await req('POST', '/api/owner/houses', { cookie: ulOwner.cookie, body: houseBody({ title: 'Upload House', rent_pkr: 10000 }) });
+    const ulHouse = r.json.house;
+    let lastUp = null;
+    for (let i = 1; i <= 31; i++) {
+      lastUp = await uploadPhoto(ulOwner.cookie, ulHouse.id, JPEG, 'up' + i + '.jpg');
+    }
+    check('review: 31st upload in an hour → 429 (per-account upload limit)',
+      lastUp.status === 429, '31st status=' + lastUp.status + ' ' + lastUp.text.slice(0, 100));
+
+    // (h) Pending queue carries the bill amount, so the owner can see
+    // a part payment before approving it.
+    r = await req('GET', '/api/owner/payments/pending', { cookie: hOwner.cookie });
+    check('review: pending queue is empty after the history approval', r.status === 200 && (r.json.payments || []).length === 0, r.status + ' ' + r.text);
+    const pOwner = await makeUser('owner', { name: 'Pending Owner' });
+    const pTenant = await makeUser('tenant', { name: 'Pending Tenant' });
+    r = await req('POST', '/api/owner/houses', { cookie: pOwner.cookie, body: houseBody({ title: 'Pending House', rent_pkr: 40000 }) });
+    const pHouse = r.json.house;
+    r = await req('GET', '/api/owner/houses/' + pHouse.id + '/code', { cookie: pOwner.cookie });
+    r = await req('POST', '/api/tenant/link', { ip: nextIp(), cookie: pTenant.cookie, body: { code: r.json.code } });
+    const pTen = r.json.tenancy.id;
+    r = await req('POST', '/api/owner/link-requests/decide', { cookie: pOwner.cookie, body: { tenancy_id: pTen, decision: 'approve', rent_pkr: 40000, due_day: 5, start_date: '2026-11-01' } });
+    r = await req('GET', '/api/tenant/bills', { cookie: pTenant.cookie });
+    const pRent = (r.json.bills || []).find((b) => b.schedule_kind === 'rent');
+    let pPay = await uploadPayment(pTenant.cookie, { bill_id: pRent.id, amount_pkr: 30000, method: 'cash' }, JPEG, 'p.jpg');
+    check('review: part payment uploads 201 (owner decides with eyes open)', pPay.status === 201, pPay.status + ' ' + pPay.text);
+    r = await req('GET', '/api/owner/payments/pending', { cookie: pOwner.cookie });
+    const pRow = (r.json.payments || []).find((pp) => pp.id === pPay.json.payment.id);
+    check('review: pending row carries the bill amount (40000) next to the paid amount (30000)',
+      !!pRow && pRow.bill_amount_pkr === 40000 && pRow.amount_pkr === 30000, JSON.stringify(pRow));
+
+    // (i) Real WCAG contrast ratios for the palette actually used
+    // (the stylesheet used to claim a check in "test.js §6" that did
+    // not exist). Ratios are computed, not asserted from memory.
+    function relLum(hex) {
+      const ch = (i) => {
+        const v = parseInt(hex.slice(i, i + 2), 16) / 255;
+        return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+      };
+      return 0.2126 * ch(1) + 0.7152 * ch(3) + 0.0722 * ch(5);
+    }
+    function contrast(a, b) {
+      const x = relLum(a), y = relLum(b);
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    }
+    // Glass card background: rgba(255,252,246,.88) over the #ab8663 photo.
+    function blend(fg, bg, alpha) {
+      const px = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+      const F = px(fg), B = px(bg);
+      return '#' + F.map((v, i) => Math.round(v * alpha + B[i] * (1 - alpha)).toString(16).padStart(2, '0')).join('');
+    }
+    const glassBg = blend('#fffcf6', '#ab8663', 0.88);
+    check('review: WCAG body text #2b2118 on glass ≥ 4.5 (AA)',
+      contrast('#2b2118', glassBg) >= 4.5, contrast('#2b2118', glassBg).toFixed(2));
+    check('review: WCAG muted text #5f4c3a on glass ≥ 4.5 (AA)',
+      contrast('#5f4c3a', glassBg) >= 4.5, contrast('#5f4c3a', glassBg).toFixed(2));
+    check('review: WCAG white on black pill #111827 ≥ 4.5 (AA)',
+      contrast('#ffffff', '#111827') >= 4.5, contrast('#ffffff', '#111827').toFixed(2));
+    check('review: WCAG white on red badge #b91c1c ≥ 4.5 (AA)',
+      contrast('#ffffff', '#b91c1c') >= 4.5, contrast('#ffffff', '#b91c1c').toFixed(2));
+    check('review: WCAG white on green lock #14532d ≥ 4.5 (AA)',
+      contrast('#ffffff', '#14532d') >= 4.5, contrast('#ffffff', '#14532d').toFixed(2));
+    check('review: WCAG error red #991b1b on glass ≥ 4.5 (AA)',
+      contrast('#991b1b', glassBg) >= 4.5, contrast('#991b1b', glassBg).toFixed(2));
+
+    // (j) Pages + small UI fixes from the review.
+    r = await req('GET', '/owner');
+    check('review: /owner has a Change password section + real Log out link',
+      r.status === 200 && r.text.includes('Change password') && r.text.includes('id="logout-link"'), r.status);
+    r = await req('GET', '/tenant');
+    check('review: /tenant has Past tenancies + Change password + Log out',
+      r.status === 200 && r.text.includes('Past tenancies') && r.text.includes('Change password') && r.text.includes('id="logout-link"'), r.status);
+    r = await req('GET', '/change-password.js');
+    check('review: /change-password.js serves + posts to the change endpoint',
+      r.status === 200 && r.text.includes('/api/auth/change-password'), r.status);
+    r = await req('GET', '/bell.js');
+    check('review: /bell.js wires the logout link to POST /api/auth/logout',
+      r.status === 200 && r.text.includes('logout-link') && r.text.includes('/api/auth/logout'), r.status);
+    r = await req('GET', '/styles.css');
+    check('review: /styles.css defines .btn-primary (was used but undefined)',
+      r.status === 200 && r.text.includes('.btn-primary'), r.status);
+    check('review: /styles.css has no dead Card Vault card/sidebar/securing rules left',
+      r.status === 200 && !r.text.includes('.card-visual') && !r.text.includes('#sidebar')
+      && !r.text.includes('securing-overlay') && !r.text.includes('.stepper')
+      && !r.text.includes('test.js §6'), r.status);
+    r = await req('GET', '/chat.js');
+    check('review: /chat.js guards background polling with try/catch (no unhandled rejection on a dropped connection)',
+      r.status === 200 && r.text.includes('next 5s poll retries') && r.text.includes('catch (e)'), r.status);
+    r = await req('GET', '/owner.js');
+    check('review: /owner.js flags a paid amount that differs from the bill',
+      r.status === 200 && r.text.includes('differs from the bill') && r.text.includes('bill_amount_pkr'), r.status);
+    r = await req('GET', '/tenant.js');
+    check('review: /tenant.js loads past tenancies from /api/tenant/history',
+      r.status === 200 && r.text.includes('/api/tenant/history'), r.status);
+    r = await req('GET', '/tenancy.js');
+    check('review: /tenancy.js falls back to /api/tenant/history for ended tenancies',
+      r.status === 200 && r.text.includes('/api/tenant/history'), r.status);
+
     // --- static shell pages serve ---
     r = await req('GET', '/');
     check('home page 200', r.status === 200 && r.text.includes('Kiraya Register'), r.status);
@@ -1579,11 +1875,13 @@ async function main() {
       const sleep = (ms) => new Promise((res2) => setTimeout(res2, ms));
       function stubNavigation(html) {
         // Replace every `window.location.href = X;` with a recorded call.
-        // Handles both the literal form ('/login') and the login page's
-        // role expression. The path expression itself is untouched.
+        // Handles both the literal form ('/login') and the role
+        // expression, which the login handler (local `role`) and the
+        // register handler (local `userRole`) share — so replace ALL
+        // occurrences, not just the first.
         let out = html.replace(
-          "window.location.href = role === 'tenant' ? '/tenant' : '/owner';",
-          "window.__redirectTo(role === 'tenant' ? '/tenant' : '/owner');");
+          /window\.location\.href = (role|userRole) === 'tenant' \? '\/tenant' : '\/owner';/g,
+          "window.__redirectTo($1 === 'tenant' ? '/tenant' : '/owner');");
         out = out.replace(/window\.location\.href = ('[^']+');/g, 'window.__redirectTo($1);');
         return { html: out, stubbed: out.includes('__redirectTo') };
       }
@@ -1684,6 +1982,23 @@ async function main() {
         check('login flow: owner dashboard unreachable sends user to /login',
           p.redirects.length === 1 && p.redirects[0] === '/login' && p.jsdomErrors.length === 0,
           'redirects=' + JSON.stringify(p.redirects) + ' errors=' + JSON.stringify(p.jsdomErrors));
+        p.dom.window.close();
+      }
+      // (f) review: registering lands on the dashboard — the session
+      // cookie is already set, so no second login is needed.
+      {
+        const p = drivePage(loginHtml, BASE + '/login');
+        const doc = p.dom.window.document;
+        doc.getElementById('reg-name').value = 'Jsdom Reg';
+        doc.getElementById('reg-gmail').value = 'jsdom-reg-' + Date.now() + '@gmail.com';
+        doc.getElementById('reg-phone').value = '0300-1234567';
+        doc.getElementById('reg-password').value = 'jsdompass1';
+        doc.getElementById('register-form').dispatchEvent(new p.dom.window.Event('submit', { bubbles: true, cancelable: true }));
+        await sleep(800);
+        check('login flow: register redirects to /owner',
+          p.redirects.length === 1 && p.redirects[0] === '/owner' && p.jsdomErrors.length === 0,
+          'redirects=' + JSON.stringify(p.redirects) + ' alerts=' + JSON.stringify(p.alerts) + ' errors=' + JSON.stringify(p.jsdomErrors)
+          + ' msg=' + JSON.stringify(doc.getElementById('reg-msg').textContent));
         p.dom.window.close();
       }
       check('login flow: no unhandled rejection from any page handler', pageErrors.length === 0, JSON.stringify(pageErrors));
