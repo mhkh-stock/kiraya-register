@@ -277,13 +277,13 @@ function setSessionCookie(res, user) {
   db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(Math.floor(Date.now() / 1000));
   db.prepare('INSERT INTO sessions(user_id, token_hash, expires_at) VALUES(?,?,?)')
     .run(user.id, hmacHex(token, SESSION_SECRET), expiresAt);
-  return 'kiraya_session=' + signToken(token) + '; HttpOnly; Path=/; SameSite=Lax; Max-Age=' + SESSION_TTL_SECONDS;
+  return 'kiraya_session=' + signToken(token) + '; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=' + SESSION_TTL_SECONDS;
 }
 function clearSessionCookie(req) {
   const signed = parseCookies(req).kiraya_session;
   const token = verifySignedToken(signed);
   if (token) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(hmacHex(token, SESSION_SECRET));
-  return 'kiraya_session=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0';
+  return 'kiraya_session=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0';
 }
 function publicUser(u) {
   if (!u) return null;
