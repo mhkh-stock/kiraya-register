@@ -18,8 +18,17 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const PORT = Number(process.env.PORT || 3038);
-const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'data', 'kiraya.sqlite');
-const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, 'uploads');
+// Deploy-only writable-location fallback (no behaviour change on a normal PC):
+// on a local run __dirname is writable, so the original paths below are used
+// exactly as before. Only when the app dir cannot be written (e.g.
+// SnapDeploy's /app, which is read-only) do the database and uploads move to
+// a writable temp directory (/tmp/kiraya.sqlite + /tmp/kiraya-uploads).
+// Explicit DB_FILE / UPLOADS_DIR env vars always win. See lib/paths.js.
+const { resolvePaths } = require('./lib/paths');
+const PATHS = resolvePaths(__dirname, process.env);
+const DB_FILE = PATHS.dbFile;
+const UPLOADS_DIR = PATHS.uploadsDir;
+if (PATHS.fallback) console.log('Kiraya Register data directory (read-only app dir fallback):', PATHS.dataRoot);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const ADMIN_CODE = process.env.ADMIN_CODE;
 if (!ADMIN_CODE) { console.error('FATAL: ADMIN_CODE env var is required — set a private code, there is no default.'); process.exit(1); }

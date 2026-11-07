@@ -68,7 +68,7 @@ Then open **http://127.0.0.1:3038** (port **3038**).
 
 - `ADMIN_CODE` is **required** — the server exits immediately without it. There is no default. Pick a private code and never share it, never commit it, never put it in a file in this repo.
 - Data lives in `data/kiraya.sqlite` (created on first run) and photos in `uploads/`. Both are git-ignored and must never be pushed.
-- `node test.js` runs the full test suite (530 tests, throwaway DB on port 3098).
+- `node test.js` runs the full test suite (539 tests, throwaway DB on port 3098).
 
 ## Deploy (SnapDeploy container)
 

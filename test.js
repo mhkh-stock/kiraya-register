@@ -9,6 +9,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 const { DatabaseSync } = require('node:sqlite');
+const { writableBase, resolvePaths } = require('./lib/paths');
 const PORT = 3098;
 const BASE = 'http://127.0.0.1:' + PORT;
 const MASTER = 'test-admin-code';
@@ -61,6 +62,35 @@ async function waitHealth() {
 }
 
 async function main() {
+  // --- writable-location fallback (lib/paths.js, pure — no server needed) ---
+  // NOTE: the suite runs as root, where chmod bits cannot make a directory
+  // unwritable, so the "read-only app dir" case is simulated with a missing
+  // directory — same code path (fs.accessSync throws) as a truly read-only
+  // host directory such as SnapDeploy's /app.
+  check('fallback: writableBase returns the app dir when it is writable',
+    writableBase(tmp) === tmp, writableBase(tmp));
+  const missingDir = path.join(tmp, 'does-not-exist');
+  check('fallback: writableBase falls back to tmpdir when the app dir is not writable',
+    writableBase(missingDir) === os.tmpdir(), writableBase(missingDir));
+  {
+    const local = resolvePaths(tmp, {});
+    check('fallback: local paths stay next to server.js when the app dir is writable',
+      local.fallback === false
+      && local.dbFile === path.join(tmp, 'data', 'kiraya.sqlite')
+      && local.uploadsDir === path.join(tmp, 'uploads'),
+      JSON.stringify(local));
+    const ro = resolvePaths(missingDir, {});
+    check('fallback: read-only app dir moves DB to /tmp/kiraya.sqlite and uploads to /tmp/kiraya-uploads',
+      ro.fallback === true
+      && ro.dbFile === path.join(os.tmpdir(), 'kiraya.sqlite')
+      && ro.uploadsDir === path.join(os.tmpdir(), 'kiraya-uploads'),
+      JSON.stringify(ro));
+    const env = resolvePaths(missingDir, { DB_FILE: '/x/custom.sqlite', UPLOADS_DIR: '/x/up' });
+    check('fallback: explicit DB_FILE / UPLOADS_DIR env vars win even in fallback mode',
+      env.dbFile === '/x/custom.sqlite' && env.uploadsDir === '/x/up',
+      JSON.stringify(env));
+  }
+
   const child = spawn(process.execPath, [path.join(__dirname, 'server.js')], {
     env: { ...process.env, PORT: String(PORT), DB_FILE, UPLOADS_DIR, ADMIN_CODE: MASTER, LOGIN_LOCK_SECONDS: '2' },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -87,6 +117,8 @@ async function main() {
       phone: '0300-1234567', role: 'owner',
     } });
     check('register owner 201', r.status === 201 && r.json && r.json.user && r.json.user.role === 'owner', r.status + ' ' + r.text);
+    check('register Set-Cookie carries Secure (regression test)',
+      /;\s*Secure;/.test(r.setCookie) && r.setCookie.startsWith('kiraya_session='), r.setCookie);
     const ownerId = r.json && r.json.user ? r.json.user.id : null;
 
     // --- register: tenant 201 ---
@@ -181,7 +213,19 @@ async function main() {
     check('login sets HttpOnly SameSite=Lax cookie',
       /HttpOnly/.test(r.setCookie) && /SameSite=Lax/.test(r.setCookie) && r.setCookie.startsWith('kiraya_session='),
       r.setCookie);
+    check('login Set-Cookie carries Secure (regression test — flag must survive hardening rounds)',
+      /;\s*Secure;/.test(r.setCookie), r.setCookie);
     const ownerCookie = cookieOf(r);
+
+    // --- plain-HTTP local login still works (real HTTP on 127.0.0.1) ---
+    // Node fetch does not enforce Secure, so the cookie issued over plain
+    // HTTP is accepted on the next request. In a real browser the Secure
+    // cookie is still stored on loopback origins (localhost exception), but
+    // a non-loopback plain-HTTP host would not store it — live sites are
+    // HTTPS-only, so that is intended, not a regression.
+    r = await req('GET', '/api/auth/me', { cookie: ownerCookie });
+    check('plain-HTTP login over 127.0.0.1 works: session cookie accepted on next request',
+      r.status === 200 && r.json && r.json.user && r.json.user.role === 'owner', r.status + ' ' + r.text);
 
     // --- /me ---
     r = await req('GET', '/api/auth/me', { cookie: ownerCookie });
@@ -192,6 +236,8 @@ async function main() {
     // --- logout kills session ---
     r = await req('POST', '/api/auth/logout', { cookie: ownerCookie });
     check('logout 200', r.status === 200, r.status + ' ' + r.text);
+    check('logout clear-cookie also carries Secure (regression test)',
+      /;\s*Secure;/.test(r.setCookie) && /Max-Age=0/.test(r.setCookie), r.setCookie);
     r = await req('GET', '/api/auth/me', { cookie: ownerCookie });
     check('/me 401 after logout', r.status === 401, r.status + ' ' + r.text);
 
